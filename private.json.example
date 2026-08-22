@@ -4,5 +4,6 @@
   "league_id": "YOUR_LEAGUE_ID_HERE",
   "game_code": "nfl",
   "game_id": null,
+  "redirect_uri": "https://localhost:8080",
   "access_token": null
 }

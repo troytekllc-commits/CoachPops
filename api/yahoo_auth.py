@@ -33,28 +33,44 @@ implemented in our own code instead of inside yfpy.
 ---------------------------------------------------------------------------
 HOW TO TRIGGER THE INITIAL BROWSER AUTHENTICATION
 ---------------------------------------------------------------------------
-1. Register an app at https://developer.yahoo.com/apps/create/
-   - Redirect URI: use ``https://localhost:8080`` for a "Web Application",
-     or select "Installed Application" / desktop app to get the simpler
-     out-of-band (OOB) flow described in step 4 below.
-   - API Permissions: check "Fantasy Sports" (Read, or Read/Write if you
-     plan to submit waiver claims / lineup changes through the API).
+1. Register an app at https://developer.yahoo.com/apps/create/ (Yahoo's
+   console was redesigned at some point after this project's docs were
+   first written -- there's no more "Installed Application" checkbox or
+   literal "oob" redirect value; the notes below match the current form):
+   - Application Name / Description: anything you want.
+   - Homepage URL: optional, not used by this app's auth flow.
+   - Redirect URI(s): the form validates this as a real URI and rejects
+     the classic bare ``oob`` value -- enter ``https://localhost:8080``
+     (or any https URL; it never has to actually be reachable, see step 4).
+     Whatever you enter here MUST exactly match the ``redirect_uri`` value
+     in ``private.json`` (see ``private.json.example``).
+   - OAuth Client Type: "Confidential Client" (this runs locally with a
+     client secret, not as a public/native/SPA client).
+   - API Permissions: you need Fantasy Sports access. If you only see
+     "OpenID Connect Permissions" / "TW Auction" checkboxes, scroll for a
+     Fantasy Sports option elsewhere on the form/console -- Yahoo has
+     moved this around across redesigns. If you genuinely can't find it,
+     that's worth double-checking with Yahoo's current docs before
+     proceeding, since without it the API calls below will 403.
    - Copy the generated "Client ID" into ``consumer_key`` and the
      "Client Secret" into ``consumer_secret`` in ``private.json``.
-2. Fill in ``league_id`` (the numeric ID from your league's Yahoo URL) and
-   ``game_code`` (``"nfl"``) in ``private.json``.
+2. Fill in ``league_id`` (the numeric ID from your league's Yahoo URL),
+   ``game_code`` (``"nfl"``), and ``redirect_uri`` (matching step 1 exactly)
+   in ``private.json``.
 3. The FIRST time any method on this class touches ``self.query`` (i.e. the
    first time you call ``get_league_settings()``, ``get_waiver_wire_players()``,
    or ``get_rosters()``), yfpy has no access/refresh token yet, so it opens
    your default web browser to a Yahoo consent screen
    (``browser_callback=True``).
 4. Log into the Yahoo account that owns/manages your fantasy league and
-   click "Agree".
-   - Web Application redirect: Yahoo redirects to your redirect URI with a
-     ``?code=...`` query param; yahoo_oauth reads it automatically.
-   - Installed Application (OOB) redirect: Yahoo instead displays the code
-     directly on the page. Copy it and paste it into the terminal prompt
-     that yfpy/yahoo_oauth prints (something like "Enter verifier: ").
+   click "Agree". Yahoo redirects your browser to the URI you registered,
+   with a ``?code=...`` query parameter -- since nothing is actually
+   listening there, the page itself will fail to load, but the code is
+   sitting right in the browser's address bar. Copy just that value and
+   paste it into the terminal prompt that yahoo_oauth prints
+   ("Enter verifier : ") -- this happens every time regardless of what
+   redirect URI you registered; yahoo_oauth never tries to catch a real
+   redirect, it always just asks you to paste the code by hand.
 5. Once authorized, yfpy holds the resulting ``access_token`` /
    ``refresh_token`` / ``token_time`` in memory; this class immediately
    writes them back into ``private.json`` under the ``"access_token"`` key
@@ -120,6 +136,28 @@ class YahooAuthManager:
         """Lazily authenticate (triggering the browser flow if needed) and
         return a ready-to-use yfpy query client."""
         if self._query is None:
+            # yfpy's underlying yahoo_oauth library hardcodes its OAuth
+            # redirect_uri to the literal string "oob" (out-of-band) --
+            # yahoo_oauth.oauth.CALLBACK_URI. Yahoo's current Developer
+            # Network "Create Application" form rejects that bare string as
+            # an invalid Redirect URI, so you register a real-looking one
+            # instead (e.g. "https://localhost:8080") and it never has to
+            # actually work as a listener: yahoo_oauth's handler() always
+            # just opens a browser and prompts you to paste a code by hand
+            # (see its `input("Enter verifier : ")` call) -- it never tries
+            # to catch a real redirect. After you click "Agree", Yahoo
+            # redirects your browser to that URI with `?code=...` in the
+            # address bar; the page itself will fail to load (nothing's
+            # listening there), but you copy the `code` value straight out
+            # of the address bar and paste it in when prompted.
+            #
+            # This patches the SAME value into yahoo_oauth so what we
+            # actually send matches whatever you registered on Yahoo's
+            # side -- set `redirect_uri` in private.json to match exactly.
+            import yahoo_oauth.oauth as _yahoo_oauth_module
+
+            _yahoo_oauth_module.CALLBACK_URI = self._credentials.get("redirect_uri", "oob")
+
             self._query = YahooFantasySportsQuery(
                 league_id=self._credentials["league_id"],
                 game_code=self._credentials.get("game_code", "nfl"),

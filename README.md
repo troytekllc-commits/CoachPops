@@ -57,15 +57,22 @@ pip install -r requirements.txt
 This project stores Yahoo Developer Network credentials in a `private.json`
 file at the project root (gitignored) instead of a `.env` file.
 
-1. Register an app at https://developer.yahoo.com/apps/create/
-   - **Application Type**: "Installed Application" is simplest for local
-     use — it gives you Yahoo's out-of-band (OOB) flow, where the auth code
-     is displayed directly on the page for you to copy/paste, instead of
-     needing a working redirect URI.
-   - **Redirect URI**: if prompted anyway, `https://localhost:8080` works
-     for local development.
-   - **API Permissions**: check "Fantasy Sports" (Read is enough unless you
-     plan to submit waiver claims / lineup changes through the API).
+1. Register an app at https://developer.yahoo.com/apps/create/. Yahoo's
+   console has been redesigned — there's no more "Installed Application"
+   checkbox, and the classic bare `oob` redirect value gets rejected as
+   invalid. Fill in the current form like this:
+   - **Application Name / Description**: anything you want.
+   - **Homepage URL**: optional, not used by this app's auth flow.
+   - **Redirect URI(s)**: enter `https://localhost:8080` (any `https://`
+     URL works — it never has to actually be reachable; see step 4 below
+     for why). Whatever you put here **must exactly match** the
+     `redirect_uri` value you'll set in `private.json` in step 3.
+   - **OAuth Client Type**: "Confidential Client" (this runs locally with
+     a client secret, not as a public/native/single-page-app client).
+   - **API Permissions**: you need Fantasy Sports access. If you only see
+     "OpenID Connect Permissions" / "TW Auction" checkboxes, look for a
+     Fantasy Sports option elsewhere on the form — Yahoo has moved this
+     around across redesigns. Without it, API calls below will 403.
    - Copy the generated **Client ID** and **Client Secret** — you'll need
      both in the next step.
 2. Find your league ID: open your league on Yahoo and look at the URL,
@@ -76,21 +83,23 @@ file at the project root (gitignored) instead of a `.env` file.
    cp private.json.example private.json
    ```
    Set `consumer_key` / `consumer_secret` to the Client ID/Secret from step 1,
-   and `league_id` to the ID from step 2. Leave `game_code` as `"nfl"` and
-   `access_token` as `null`.
+   `league_id` to the ID from step 2, and `redirect_uri` to exactly what you
+   registered in step 1 (e.g. `https://localhost:8080`). Leave `game_code`
+   as `"nfl"` and `access_token` as `null`.
 4. Run the one-off login script to complete the OAuth handshake:
    ```bash
    python scripts/yahoo_login.py
    ```
-   This opens a browser window (or prints a URL if no browser is available)
-   for you to log into the Yahoo account that owns/manages your league and
-   click "Agree". If you registered an "Installed Application", Yahoo shows
-   the verification code directly on the page — copy it and paste it into
-   the terminal prompt. See the module docstring in `api/yahoo_auth.py` for
-   more detail. On success, the script prints your league name and a few
-   sample free agents, and caches the resulting token back into
-   `private.json` so you won't be prompted again until it's revoked or
-   expires.
+   This opens a browser window for you to log into the Yahoo account that
+   owns/manages your league and click "Agree". Yahoo then redirects your
+   browser to the URI you registered; since nothing is actually listening
+   there, the page fails to load — but the code you need is sitting right
+   in the browser's address bar (`...?code=XXXX`). Copy just that value and
+   paste it into the terminal prompt ("Enter verifier : "). See the module
+   docstring in `api/yahoo_auth.py` for more detail. On success, the script
+   prints your league name and a few sample free agents, and caches the
+   resulting token back into `private.json` so you won't be prompted again
+   until it's revoked or expires.
 
 ## Running the dashboard
 
