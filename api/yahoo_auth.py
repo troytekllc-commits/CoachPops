@@ -179,7 +179,15 @@ class YahooAuthManager:
             )
             if position:
                 url += f";position={position}"
-            url += f";start={start};count={page_size}"
+            # `out=percent_owned` pulls each player's league-wide ownership %
+            # (and week-over-week delta) in the same call, at no extra API
+            # cost -- used by the "rising ownership" breakout signal in
+            # data/calculators.py's find_breakout_signals(). NOTE: not
+            # verified against a live league yet (no test credentials in
+            # this environment) -- if `percent_owned`/`percent_owned_delta`
+            # come back empty once you're live, double check this
+            # sub-resource name against Yahoo's current API docs.
+            url += f";start={start};count={page_size};out=percent_owned"
 
             try:
                 page = query.query(url, ["league", "players"])

@@ -15,23 +15,28 @@ Yahoo's API does not expose everything our calculators want:
   ``STAT_NAME_ALIASES`` below) -- double check it against your league's
   actual scoring settings if numbers look off.
 - ``is_rookie`` / ``draft_capital`` (NFL draft round/pick), ``target_share``
-  / ``deep_target_share``, and ``projected_points_by_week``: Yahoo doesn't
-  expose any of these. When ``enrich=True`` (the default), this module
-  backfills them from nfl_data_py via ``api/nfl_enrichment.py`` -- see that
-  module's docstring for exactly how (a real ``yahoo_id`` crosswalk, not
-  name matching) and its limits (~half of rostered players are covered;
-  the weekly projection is a flat points-per-game baseline, not a true
+  / ``deep_target_share``, ``injury_opportunity`` (+ who's hurt ahead of
+  them), and ``projected_points_by_week``: Yahoo doesn't expose any of
+  these. When ``enrich=True`` (the default), this module backfills them
+  from nfl_data_py via ``api/nfl_enrichment.py`` -- see that module's
+  docstring for exactly how (a real ``yahoo_id`` crosswalk, not name
+  matching) and its limits (~half of rostered players are covered; the
+  weekly projection is a flat points-per-game baseline, not a true
   projection). Pass ``enrich=False`` to skip it and get Yahoo-only data
   with those fields at their empty defaults.
+- ``percent_owned`` / ``percent_owned_delta``: Yahoo *does* provide these
+  (league-wide ownership % and its week-over-week change), requested via
+  ``out=percent_owned`` in ``get_waiver_wire_players()`` -- not yet
+  verified against a live league (see the comment at that call site).
 
-Net effect on the five calculators:
-- With ``enrich=True`` (default): all five calculators can produce
-  results, bounded by the coverage/accuracy caveats in
-  ``api/nfl_enrichment.py``.
+Net effect on the six calculators:
+- With ``enrich=True`` (default): all six calculators can produce results,
+  bounded by the coverage/accuracy caveats in ``api/nfl_enrichment.py``.
 - With ``enrich=False``: only ``calculate_custom_value()`` and
   ``calculate_qb_floor()`` work fully (both only need ``stats``);
   ``apply_rookie_bump()``, ``find_ir_stashes()``, and
-  ``evaluate_wr_scarcity()`` return empty.
+  ``evaluate_wr_scarcity()`` return empty, and ``find_breakout_signals()``
+  can only fire on the ``percent_owned``-based signal.
 
 Fetching season stats is one extra Yahoo API call *per player*, so
 `build_players_dataframe` takes a `count_limit` to keep it fast/well under
@@ -120,6 +125,17 @@ def player_to_row(player, stat_id_map: Optional[Dict[int, str]] = None) -> Dict[
 
     eligible_positions = getattr(player, "eligible_positions", []) or []
 
+    # `percent_owned` is Yahoo's league-wide ownership % for this player, requested
+    # via `out=percent_owned` in YahooAuthManager.get_waiver_wire_players(). Its
+    # `delta` is the week-over-week change -- used by find_breakout_signals()'s
+    # "rising ownership" signal (the wider Yahoo market catching on before your
+    # own league does).
+    percent_owned_obj = getattr(player, "percent_owned", None)
+    percent_owned = getattr(percent_owned_obj, "value", None) if percent_owned_obj else getattr(
+        player, "percent_owned_value", None
+    )
+    percent_owned_delta = getattr(percent_owned_obj, "delta", None) if percent_owned_obj else None
+
     return {
         "player_key": getattr(player, "player_key", ""),
         "player_id": getattr(player, "player_id", ""),
@@ -128,11 +144,25 @@ def player_to_row(player, stat_id_map: Optional[Dict[int, str]] = None) -> Dict[
         "display_position": getattr(player, "display_position", ""),
         "eligible_positions": [{"position": pos} for pos in eligible_positions],
         "status": getattr(player, "status", "") or "",
-        # --- Enrichment fields Yahoo doesn't provide -- see module docstring ---
+        "percent_owned": percent_owned,
+        "percent_owned_delta": percent_owned_delta,
+        # --- Enrichment fields Yahoo doesn't provide -- see api/nfl_enrichment.py's
+        # ENRICHMENT_FIELDS for the authoritative list; defaults here are the
+        # "no match in the yahoo_id crosswalk" fallback values. ---
         "is_rookie": False,
         "draft_capital": None,
         "target_share": None,
         "deep_target_share": None,
+        "red_zone_share": None,
+        "injury_opportunity": False,
+        "injury_opportunity_ahead_player": None,
+        "injury_opportunity_ahead_status": None,
+        "team_new_head_coach": False,
+        "team_head_coach_name": None,
+        "team_new_offensive_coordinator": False,
+        "team_offensive_coordinator_name": None,
+        "qb_year2_regression_caution": False,
+        "qb_year1_ppg": None,
         "stats": _extract_stats_dict(player, stat_id_map) if stat_id_map else {},
         "projected_points_by_week": {},
     }

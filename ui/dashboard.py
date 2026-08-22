@@ -35,6 +35,7 @@ from data.calculators import (  # noqa: E402
     calculate_custom_value,
     calculate_qb_floor,
     evaluate_wr_scarcity,
+    find_breakout_signals,
     find_ir_stashes,
 )
 
@@ -335,6 +336,86 @@ def build_mock_players_df() -> pd.DataFrame:
             "projected_points_by_week": _weekly_projection(7.0, 7.5),
         },
     ]
+
+    # Fill in the Breakout Radar / enrichment fields every record needs, so
+    # find_breakout_signals() (and the other calculators) never hit a
+    # missing-column error -- then layer in a few deliberate scenarios below
+    # so every signal has at least one mock player that lights it up.
+    for player in players:
+        player.setdefault("red_zone_share", None)
+        player.setdefault("injury_opportunity", False)
+        player.setdefault("injury_opportunity_ahead_player", None)
+        player.setdefault("injury_opportunity_ahead_status", None)
+        player.setdefault("team_new_head_coach", False)
+        player.setdefault("team_head_coach_name", None)
+        player.setdefault("team_new_offensive_coordinator", False)
+        player.setdefault("team_offensive_coordinator_name", None)
+        player.setdefault("qb_year2_regression_caution", False)
+        player.setdefault("qb_year1_ppg", None)
+        player.setdefault("percent_owned", None)
+        player.setdefault("percent_owned_delta", None)
+
+    by_id = {p["player_id"]: p for p in players}
+
+    # New offensive coordinator: Steady Eddie's team got a new play-caller.
+    by_id["100007"]["team_new_offensive_coordinator"] = True
+    by_id["100007"]["team_offensive_coordinator_name"] = "Pat Freshstart"
+
+    # New head coach (no OC signal): Justin Scrambler's team fired its HC.
+    by_id["100001"]["team_new_head_coach"] = True
+    by_id["100001"]["team_head_coach_name"] = "Ben Rebuild"
+
+    # Draft-capital-undersold rookie: Dusty Udfa went undrafted but is
+    # already earning real red-zone work.
+    by_id["100005"]["red_zone_share"] = 0.16
+
+    # Earned red-zone role, stacking on top of the existing rookie-bump signal.
+    by_id["100003"]["red_zone_share"] = 0.24
+
+    # Rising ownership vs. already-meaningfully-owned-elsewhere.
+    by_id["100013"]["percent_owned"] = 9.0
+    by_id["100013"]["percent_owned_delta"] = 6.0  # climbing fast
+    by_id["100009"]["percent_owned"] = 21.0
+    by_id["100009"]["percent_owned_delta"] = 0.5  # already meaningfully owned, flat
+
+    # QB "sophomore slump" caution: Pocket Palmer was a top-15-PPG rookie last year.
+    by_id["100002"]["qb_year2_regression_caution"] = True
+    by_id["100002"]["qb_year1_ppg"] = 19.4
+
+    # Injury-opened opportunity: a backup WR behind the already-injured Wounded Wes.
+    players.append({
+        "player_key": "449.p.100015",
+        "player_id": "100015",
+        "name": {"full": "Backup Barney", "first": "Backup", "last": "Barney"},
+        "editorial_team_abbr": "PHI",
+        "display_position": "WR",
+        "eligible_positions": [{"position": "WR"}],
+        "status": "",
+        "is_rookie": False,
+        "draft_capital": None,
+        "target_share": 0.08,
+        "deep_target_share": 0.10,
+        "red_zone_share": None,
+        "injury_opportunity": True,
+        "injury_opportunity_ahead_player": "Wounded Wes",
+        "injury_opportunity_ahead_status": "O",
+        "team_new_head_coach": False,
+        "team_head_coach_name": None,
+        "team_new_offensive_coordinator": False,
+        "team_offensive_coordinator_name": None,
+        "qb_year2_regression_caution": False,
+        "qb_year1_ppg": None,
+        "percent_owned": 2.0,
+        "percent_owned_delta": 0.0,
+        "stats": {
+            "passing_yards": 0, "passing_touchdowns": 0, "interceptions": 0,
+            "rushing_yards": 0, "rushing_touchdowns": 0, "receptions": 12,
+            "receiving_yards": 140, "receiving_touchdowns": 1,
+            "two_point_conversions": 0, "fumbles_lost": 0,
+        },
+        "projected_points_by_week": _weekly_projection(3.0, 6.0),
+    })
+
     return pd.DataFrame(players)
 
 
@@ -473,6 +554,29 @@ def render_wr3_floor_finder(players_df: pd.DataFrame) -> None:
     )
 
 
+def render_breakout_radar(players_df: pd.DataFrame) -> None:
+    st.subheader("Breakout Radar")
+    st.caption(
+        "Scans for the same predictive patterns behind last season's hardest-to-see-coming "
+        "performers: an injury-opened opportunity, a new offensive play-caller, target share "
+        "running ahead of the box score, the wider Yahoo market catching on early, or a Day 3/UDFA "
+        "rookie already earning more volume than their draft slot implied. Also flags (but doesn't "
+        "score against) a QB \"sophomore slump\" caution -- rookie QBs who finished top-15 in PPG "
+        "have historically declined more often than not in Year 2."
+    )
+    candidates = _with_display_name(find_breakout_signals(players_df))
+    if candidates.empty:
+        st.info("No players clear the breakout-score threshold in the current pool.")
+        return
+
+    display = candidates[
+        ["player_name", "editorial_team_abbr", "display_position", "breakout_score", "breakout_signals", "caution_flags"]
+    ].rename(columns={"editorial_team_abbr": "team", "display_position": "pos"})
+    display["breakout_signals"] = display["breakout_signals"].apply(lambda s: " | ".join(s) if s else "")
+    display["caution_flags"] = display["caution_flags"].apply(lambda s: " | ".join(s) if s else "")
+    st.dataframe(display, use_container_width=True, hide_index=True)
+
+
 def load_live_players_df(count_limit: int, enrich: bool, season: int) -> pd.DataFrame:
     """Pull real waiver-wire players via YahooAuthManager + player_mapper,
     optionally backfilled with nfl_data_py via nfl_enrichment.
@@ -539,10 +643,10 @@ def main() -> None:
                 )
             else:
                 st.caption(
-                    "Backfill disabled -- `is_rookie`, `draft_capital`, `target_share`, "
-                    "`deep_target_share`, and `projected_points_by_week` are all at their "
-                    "empty Yahoo-only defaults, so Rookie Radar, IR Stash Targets, and "
-                    "WR3 Floor Finder will show empty."
+                    "Backfill disabled -- every nfl_data_py-sourced field is at its empty "
+                    "Yahoo-only default, so Rookie Radar, IR Stash Targets, WR3 Floor Finder, "
+                    "and Breakout Radar will all show empty (Breakout Radar can still fire on "
+                    "`percent_owned`/`percent_owned_delta` alone, since Yahoo provides those)."
                 )
         except Exception as exc:
             st.error(
@@ -561,13 +665,14 @@ def main() -> None:
         )
         players_df = build_mock_players_df()
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         [
             "League Optimizer",
             "Rookie Radar",
             "QB Konami Code",
             "IR Stash Targets",
             "WR3 Floor Finder",
+            "Breakout Radar",
         ]
     )
     with tab1:
@@ -580,6 +685,8 @@ def main() -> None:
         render_ir_stash_targets(players_df)
     with tab5:
         render_wr3_floor_finder(players_df)
+    with tab6:
+        render_breakout_radar(players_df)
 
 
 if __name__ == "__main__":

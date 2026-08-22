@@ -1,12 +1,13 @@
 """Custom league analytics engines.
 
-Five pandas-based calculators tuned for a 3-WR / 6-bench / 2-IR league
+Six pandas-based calculators tuned for a 3-WR / 6-bench / 2-IR league
 format. Every function takes (and returns) a DataFrame of player records
 shaped like the nested structure Yahoo's Fantasy API actually returns for
-players, extended with a few enrichment fields our app layers on top
-(projections, draft capital, target share, etc. -- in production these
-would come from ``get_league_settings()``/``get_waiver_wire_players()`` in
-``api/yahoo_auth.py`` plus an external stats source; see the mock data in
+players, extended with a set of enrichment fields our app layers on top
+(projections, draft capital, target share, coaching changes, etc. -- in
+production these come from ``get_waiver_wire_players()``/
+``get_league_settings()`` in ``api/yahoo_auth.py`` plus
+``api/nfl_enrichment.py``'s nfl_data_py backfill; see the mock data in
 ``ui/dashboard.py`` for the exact shape expected here).
 
 Expected columns on the input DataFrame
@@ -31,6 +32,21 @@ Expected columns on the input DataFrame
 - ``target_share``               (float 0-1) share of team's air targets
 - ``deep_target_share``          (float 0-1) share of the player's own
                                   targets that traveled 20+ air yards
+- ``red_zone_share``             (float 0-1) share of the *team's* red-zone
+                                  (opponent's 10-yard line or closer)
+                                  touches (rush attempts + targets) this player got
+- ``injury_opportunity``         (bool) a same-team/position player ranked
+                                  ahead of them on the depth chart is
+                                  Questionable/Doubtful/Out
+- ``injury_opportunity_ahead_player`` / ``injury_opportunity_ahead_status`` (str)
+- ``team_new_head_coach`` / ``team_new_offensive_coordinator`` (bool)
+- ``team_head_coach_name`` / ``team_offensive_coordinator_name`` (str)
+- ``qb_year2_regression_caution`` (bool) rookie QB last season who
+                                  finished top-15 in PPG -- historically a
+                                  Year 2 decline risk
+- ``qb_year1_ppg``               (float) that rookie season's PPG
+- ``percent_owned`` / ``percent_owned_delta`` (float) Yahoo's league-wide
+                                  ownership % and its week-over-week change
 
 Not every calculator needs every column -- see each docstring below.
 """
@@ -272,3 +288,165 @@ def evaluate_wr_scarcity(
 
     wrs["wr_floor_score"] = (wrs["target_share"] * 100) - (wrs["deep_target_share"] * deep_target_penalty)
     return wrs.sort_values("wr_floor_score", ascending=False).reset_index(drop=True)
+
+
+# --- Breakout Radar ---------------------------------------------------------
+# Signal weights are tunable; see find_breakout_signals()'s docstring for
+# what each signal measures and where its data comes from.
+BREAKOUT_SIGNAL_WEIGHTS: Dict[str, float] = {
+    "injury_opportunity": 2.0,
+    "new_offensive_coordinator": 1.5,
+    "new_head_coach": 1.0,  # only scored if there's no OC signal already counted for that team
+    "efficiency_ahead_of_production": 1.5,
+    "rising_ownership": 1.0,
+    "meaningful_ownership_elsewhere": 0.5,
+    "draft_capital_undersold": 1.5,
+    "earned_red_zone_role": 1.0,
+}
+
+RISING_OWNERSHIP_DELTA_THRESHOLD = 3.0  # percentage points, week over week
+MEANINGFUL_OWNERSHIP_THRESHOLD = 15.0  # percent owned across all of Yahoo
+UNDERSOLD_ROOKIE_ROUND_THRESHOLD = 4  # Day 3 (round 4+) or undrafted
+UNDERSOLD_ROOKIE_TARGET_SHARE = 0.12
+UNDERSOLD_ROOKIE_RED_ZONE_SHARE = 0.10
+EARNED_RED_ZONE_SHARE_THRESHOLD = 0.20
+EFFICIENCY_GAP_THRESHOLD = 0.30  # percentile-rank gap within position
+MIN_POSITION_GROUP_FOR_EFFICIENCY_CHECK = 3
+
+
+def _efficiency_ahead_of_production_gap(players_df: pd.DataFrame) -> pd.Series:
+    """Within each position group, how much higher a player's target-share
+    percentile rank is than their custom-scoring percentile rank -- a proxy
+    for "the underlying opportunity (targets) hasn't shown up in the box
+    score yet" (the Chris Olave / Alec Pierce pattern: advanced metrics
+    outpacing the raw stat line).
+
+    Needs at least `MIN_POSITION_GROUP_FOR_EFFICIENCY_CHECK` players at a
+    position with non-null `target_share` to compute a meaningful
+    percentile -- returns NaN for players in too-small groups rather than a
+    misleading rank of 1.
+    """
+    custom_value = players_df["stats"].apply(
+        lambda stats: sum(_stat(stats, name) * weight for name, weight in DEFAULT_SCORING_SETTINGS.items())
+    )
+    gap = pd.Series(float("nan"), index=players_df.index)
+
+    for _, group_index in players_df.groupby("display_position").groups.items():
+        group = players_df.loc[group_index]
+        if len(group) < MIN_POSITION_GROUP_FOR_EFFICIENCY_CHECK or group["target_share"].isna().all():
+            continue
+        target_share_percentile = group["target_share"].rank(pct=True)
+        production_percentile = custom_value.loc[group_index].rank(pct=True)
+        gap.loc[group_index] = target_share_percentile - production_percentile
+
+    return gap
+
+
+def find_breakout_signals(players_df: pd.DataFrame, min_score: float = 1.0) -> pd.DataFrame:
+    """Scan the pool for players showing the same predictive patterns behind
+    last season's hardest-to-see-coming fantasy performers: an injury-opened
+    opportunity, a new offensive play-caller, efficiency metrics running
+    ahead of the box score, the wider Yahoo market catching on before your
+    own league does, or a Day 3/UDFA rookie already earning more volume
+    than their draft slot implied.
+
+    Also raises (but doesn't score against) a QB "sophomore slump" caution:
+    rookie QBs who finished top-15 in fantasy PPG have historically
+    *declined* more often than not in Year 2 (roughly 11 of the last 14) --
+    a defense's film advantage apparently outweighing the QB's own growth.
+    See `api/nfl_enrichment.py`'s `build_qb_year2_regression_flags()`.
+
+    Known gap: a real signal from the same research this is built on --
+    whether a rookie/sophomore's positional competition departed or
+    arrived (who they're now blocking or being blocked by) -- isn't
+    implemented. It needs careful two-season role-matching to avoid noise,
+    so it's documented as a future enhancement rather than shipped
+    half-reliable; see `api/nfl_enrichment.py`'s module docstring.
+
+    Requires the enrichment fields from `api/nfl_enrichment.py`
+    (`injury_opportunity`, `team_new_offensive_coordinator`/`team_new_head_coach`,
+    `target_share`, `red_zone_share`, `is_rookie`/`draft_capital`,
+    `qb_year2_regression_caution`) plus Yahoo's own `percent_owned`/
+    `percent_owned_delta`. A signal simply doesn't fire for players missing
+    that data (e.g. the roughly half of rostered players outside nflverse's
+    `yahoo_id` crosswalk) -- this never guesses at a missing value.
+
+    Args:
+        players_df: Player records, enriched via `api/nfl_enrichment.py`.
+        min_score: Minimum `breakout_score` required to appear in the results.
+
+    Returns:
+        DataFrame filtered to players clearing `min_score`, with
+        `breakout_score` (float), `breakout_signals` (list[str]), and
+        `caution_flags` (list[str]) columns, sorted descending by score.
+    """
+    df = players_df.copy()
+    efficiency_gap = _efficiency_ahead_of_production_gap(df)
+
+    scores, signals_col, cautions_col = [], [], []
+
+    for idx, row in df.iterrows():
+        score = 0.0
+        signals: list = []
+        cautions: list = []
+
+        if row.get("injury_opportunity"):
+            score += BREAKOUT_SIGNAL_WEIGHTS["injury_opportunity"]
+            signals.append(
+                f"Opportunity: {row.get('injury_opportunity_ahead_player')} is "
+                f"{row.get('injury_opportunity_ahead_status')}"
+            )
+
+        if row.get("team_new_offensive_coordinator"):
+            score += BREAKOUT_SIGNAL_WEIGHTS["new_offensive_coordinator"]
+            signals.append(f"New offensive coordinator: {row.get('team_offensive_coordinator_name')}")
+        elif row.get("team_new_head_coach"):
+            score += BREAKOUT_SIGNAL_WEIGHTS["new_head_coach"]
+            signals.append(f"New head coach: {row.get('team_head_coach_name')}")
+
+        gap = efficiency_gap.get(idx)
+        if gap is not None and not pd.isna(gap) and gap >= EFFICIENCY_GAP_THRESHOLD:
+            score += BREAKOUT_SIGNAL_WEIGHTS["efficiency_ahead_of_production"]
+            signals.append("Target share running ahead of box-score production")
+
+        delta = row.get("percent_owned_delta")
+        owned = row.get("percent_owned")
+        if delta is not None and delta >= RISING_OWNERSHIP_DELTA_THRESHOLD:
+            score += BREAKOUT_SIGNAL_WEIGHTS["rising_ownership"]
+            signals.append(f"Rising ownership (+{delta:.0f} pts this week)")
+        elif owned is not None and owned >= MEANINGFUL_OWNERSHIP_THRESHOLD:
+            score += BREAKOUT_SIGNAL_WEIGHTS["meaningful_ownership_elsewhere"]
+            signals.append(f"Already {owned:.0f}% owned across Yahoo")
+
+        if row.get("is_rookie"):
+            draft_capital = row.get("draft_capital")
+            undersold_capital = (
+                draft_capital is None or draft_capital.get("round", 0) >= UNDERSOLD_ROOKIE_ROUND_THRESHOLD
+            )
+            has_real_role = (row.get("target_share") or 0) >= UNDERSOLD_ROOKIE_TARGET_SHARE or (
+                row.get("red_zone_share") or 0
+            ) >= UNDERSOLD_ROOKIE_RED_ZONE_SHARE
+            if undersold_capital and has_real_role:
+                score += BREAKOUT_SIGNAL_WEIGHTS["draft_capital_undersold"]
+                signals.append("Day 3/UDFA rookie already earning real volume")
+
+        if (row.get("red_zone_share") or 0) >= EARNED_RED_ZONE_SHARE_THRESHOLD:
+            score += BREAKOUT_SIGNAL_WEIGHTS["earned_red_zone_role"]
+            signals.append(f"Earned red-zone role ({row['red_zone_share'] * 100:.0f}% of team share)")
+
+        if row.get("qb_year2_regression_caution"):
+            cautions.append(
+                f"Sophomore-slump caution: top-15 QB PPG as a rookie ({row.get('qb_year1_ppg')} pts/gm) -- "
+                "historically ~79% of that group declines in Year 2"
+            )
+
+        scores.append(score)
+        signals_col.append(signals)
+        cautions_col.append(cautions)
+
+    df["breakout_score"] = scores
+    df["breakout_signals"] = signals_col
+    df["caution_flags"] = cautions_col
+
+    candidates = df[df["breakout_score"] >= min_score]
+    return candidates.sort_values("breakout_score", ascending=False).reset_index(drop=True)
