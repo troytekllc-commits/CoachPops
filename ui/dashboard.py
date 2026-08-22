@@ -3,18 +3,18 @@
 Run with (from the project root, inside the activated venv):
     streamlit run app.py
 
-Currently wired to MOCK data (see ``build_mock_players_df()`` below) shaped
-to mimic Yahoo Fantasy's real ``/players`` endpoint response: nested
-dict/list columns for ``name``, ``eligible_positions``, etc., instead of a
-flat schema. A handful of extra nested fields this app needs but Yahoo
-doesn't provide directly (``stats`` totals, ``projected_points_by_week``,
-``draft_capital``, ``target_share``, ``deep_target_share``) are layered on
-in the same nested style.
+Data source: mock data shaped to mimic Yahoo Fantasy's real ``/players``
+endpoint response (nested dict/list columns for ``name``,
+``eligible_positions``, etc., instead of a flat schema), OR real data
+pulled live via ``YahooAuthManager`` + ``api/player_mapper.py`` once
+``private.json`` exists at the project root. A sidebar toggle lets you pick
+between them; see the module docstring in ``api/player_mapper.py`` for
+which calculators work fully against real (unbackfilled) Yahoo data today
+vs. which need extra enrichment.
 
-To go live: replace ``build_mock_players_df()`` with a call into
-``YahooAuthManager().get_waiver_wire_players()`` (``api/yahoo_auth.py``)
-converted into a DataFrame with this same column shape, enriched with
-projections/draft capital/target share from your stats provider of choice.
+IMPORTANT: run ``python scripts/yahoo_login.py`` once from a terminal
+*before* selecting "Live Yahoo data" here -- that's where the one-time
+interactive browser OAuth handshake belongs, not inside a Streamlit rerun.
 """
 
 from __future__ import annotations
@@ -26,7 +26,8 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(PROJECT_ROOT))
 
 from data.calculators import (  # noqa: E402
     DEFAULT_SCORING_SETTINGS,
@@ -472,18 +473,69 @@ def render_wr3_floor_finder(players_df: pd.DataFrame) -> None:
     )
 
 
+def load_live_players_df(count_limit: int) -> pd.DataFrame:
+    """Pull real waiver-wire players via YahooAuthManager + player_mapper.
+
+    Raises whatever YahooAuthManager/player_mapper raises (missing
+    private.json, auth failure, etc.) -- the caller in main() decides how
+    to surface that to the user.
+    """
+    from api.player_mapper import build_players_dataframe
+    from api.yahoo_auth import YahooAuthManager
+
+    auth = YahooAuthManager()
+    free_agents = auth.get_waiver_wire_players(count_limit=count_limit)
+    return build_players_dataframe(auth, free_agents, count_limit=count_limit)
+
+
 def main() -> None:
     st.set_page_config(page_title="CoachPops Fantasy Manager", page_icon="🏈", layout="wide")
     st.title("🏈 CoachPops Fantasy Football Manager")
-    st.warning(
-        "Showing **mock data** shaped to match Yahoo's real `/players` response. "
-        "Wire up `private.json` (see `api/yahoo_auth.py`) and swap "
-        "`build_mock_players_df()` for a live `YahooAuthManager().get_waiver_wire_players()` "
-        "call to see your real waiver wire.",
-        icon="⚠️",
-    )
 
-    players_df = build_mock_players_df()
+    private_json_exists = (PROJECT_ROOT / "private.json").is_file()
+
+    with st.sidebar:
+        st.header("Data source")
+        data_source = st.radio(
+            "Waiver wire data",
+            options=["Mock data", "Live Yahoo data"],
+            index=0,
+            disabled=not private_json_exists,
+            help=None if private_json_exists else "Create private.json first (see README).",
+        )
+        live_count_limit = st.slider(
+            "Players to fetch (live only)", min_value=5, max_value=100, value=25, step=5,
+            help="Each player costs one extra Yahoo API call for season stats.",
+            disabled=data_source != "Live Yahoo data",
+        )
+
+    if data_source == "Live Yahoo data":
+        try:
+            with st.spinner("Fetching live waiver wire data from Yahoo..."):
+                players_df = load_live_players_df(live_count_limit)
+            st.success("Connected to Yahoo -- showing live waiver wire data.", icon="✅")
+            st.caption(
+                "Note: `is_rookie`, `draft_capital`, `target_share`, `deep_target_share`, and "
+                "`projected_points_by_week` aren't provided by Yahoo's API, so Rookie Radar, "
+                "IR Stash Targets, and WR3 Floor Finder will show empty until those are "
+                "backfilled from an external source -- see `api/player_mapper.py`."
+            )
+        except Exception as exc:
+            st.error(
+                f"Couldn't load live Yahoo data ({exc}). Run `python scripts/yahoo_login.py` "
+                "from a terminal first to complete the OAuth handshake, then reload. "
+                "Falling back to mock data for now.",
+                icon="🚫",
+            )
+            players_df = build_mock_players_df()
+    else:
+        st.warning(
+            "Showing **mock data** shaped to match Yahoo's real `/players` response. "
+            "Create `private.json` (see README) and select \"Live Yahoo data\" in the "
+            "sidebar to see your real waiver wire.",
+            icon="⚠️",
+        )
+        players_df = build_mock_players_df()
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs(
         [
