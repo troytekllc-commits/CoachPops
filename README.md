@@ -69,12 +69,20 @@ file at the project root (gitignored) instead of a `.env` file.
      `redirect_uri` value you'll set in `private.json` in step 3.
    - **OAuth Client Type**: "Confidential Client" (this runs locally with
      a client secret, not as a public/native/single-page-app client).
-   - **API Permissions**: you need Fantasy Sports access. If you only see
-     "OpenID Connect Permissions" / "TW Auction" checkboxes, look for a
-     Fantasy Sports option elsewhere on the form — Yahoo has moved this
-     around across redesigns. Without it, API calls below will 403.
+   - **API Permissions**: this section will be empty — Fantasy Sports is
+     no longer a self-serve checkbox here. See step 1a.
    - Copy the generated **Client ID** and **Client Secret** — you'll need
-     both in the next step.
+     both in a later step.
+1a. Apply for Fantasy Sports API access at
+    **https://sports.yahoo.com/developer/access/** — Yahoo now manually
+    reviews Fantasy Sports API access per application instead of it being
+    a console checkbox. The form asks for your product/use case, the data
+    you need (read access to league settings/rosters/players is enough
+    here), your user base (there's an explicit "personal or single league
+    use" option), and the **Client ID** from the app you just created —
+    fill that in so approval attaches to it. Yahoo's Fantasy Sports team
+    reviews submissions (no published turnaround time); nothing below
+    this point will work until you're approved.
 2. Find your league ID: open your league on Yahoo and look at the URL,
    e.g. `https://football.fantasysports.yahoo.com/f1/123456` → league ID
    is `123456`.

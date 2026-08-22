@@ -46,14 +46,29 @@ HOW TO TRIGGER THE INITIAL BROWSER AUTHENTICATION
      in ``private.json`` (see ``private.json.example``).
    - OAuth Client Type: "Confidential Client" (this runs locally with a
      client secret, not as a public/native/SPA client).
-   - API Permissions: you need Fantasy Sports access. If you only see
-     "OpenID Connect Permissions" / "TW Auction" checkboxes, scroll for a
-     Fantasy Sports option elsewhere on the form/console -- Yahoo has
-     moved this around across redesigns. If you genuinely can't find it,
-     that's worth double-checking with Yahoo's current docs before
-     proceeding, since without it the API calls below will 403.
+   - API Permissions: this section will be EMPTY -- Fantasy Sports is no
+     longer a self-serve checkbox here. See step 1a below.
    - Copy the generated "Client ID" into ``consumer_key`` and the
      "Client Secret" into ``consumer_secret`` in ``private.json``.
+1a. Apply for Fantasy Sports API access separately, at
+    https://sports.yahoo.com/developer/access/ -- Yahoo now manually
+    reviews Fantasy Sports API access per application instead of it being
+    a checkbox on the generic console (confirmed by fetching that page's
+    actual content, not assumed). The form asks for:
+    - The product/use case (e.g. "a personal fantasy football dashboard
+      for my own league").
+    - The Fantasy Sports data needed (read access to league settings,
+      rosters, players).
+    - User base -- there's an explicit field for "personal or single
+      league use", which should make approval straightforward for this
+      project.
+    - The **Client ID** from the app you created in step 1 (fill this in
+      so approval attaches to that existing app rather than provisioning
+      a new one).
+    - Access type: read-only is all this project needs.
+    Submission is reviewed by Yahoo's Fantasy Sports team (no published
+    turnaround time) before any Fantasy Sports API call will succeed --
+    everything below this point only works AFTER approval.
 2. Fill in ``league_id`` (the numeric ID from your league's Yahoo URL),
    ``game_code`` (``"nfl"``), and ``redirect_uri`` (matching step 1 exactly)
    in ``private.json``.
