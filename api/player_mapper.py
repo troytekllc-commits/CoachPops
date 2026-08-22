@@ -14,23 +14,24 @@ Yahoo's API does not expose everything our calculators want:
   remap is a best-effort name/abbreviation match (see
   ``STAT_NAME_ALIASES`` below) -- double check it against your league's
   actual scoring settings if numbers look off.
-- ``is_rookie`` / ``draft_capital`` (NFL draft round/pick): Yahoo doesn't
-  expose NFL draft data at all. Comes back as ``False`` / ``None`` for
-  every player until you backfill it (e.g. from nfl_data_py's
-  ``import_draft_picks``, joined on player name + team).
-- ``target_share`` / ``deep_target_share``: not exposed by Yahoo either.
-  Comes back as ``None`` until backfilled from an external stats source
-  (e.g. nfl_data_py's ``import_weekly_data``, aggregated per player).
-- ``projected_points_by_week``: Yahoo's API doesn't provide forward
-  projections. Comes back as ``{}`` until wired to a projections source.
+- ``is_rookie`` / ``draft_capital`` (NFL draft round/pick), ``target_share``
+  / ``deep_target_share``, and ``projected_points_by_week``: Yahoo doesn't
+  expose any of these. When ``enrich=True`` (the default), this module
+  backfills them from nfl_data_py via ``api/nfl_enrichment.py`` -- see that
+  module's docstring for exactly how (a real ``yahoo_id`` crosswalk, not
+  name matching) and its limits (~half of rostered players are covered;
+  the weekly projection is a flat points-per-game baseline, not a true
+  projection). Pass ``enrich=False`` to skip it and get Yahoo-only data
+  with those fields at their empty defaults.
 
-Net effect on the five calculators, run against real (unbackfilled) data:
-- ``calculate_custom_value()`` and ``calculate_qb_floor()`` work fully --
-  both only need ``stats``.
-- ``apply_rookie_bump()`` returns empty (no players are `is_rookie=True`).
-- ``find_ir_stashes()`` returns empty (``projected_back_half_points`` is
-  always 0 without projections, so nothing clears the threshold).
-- ``evaluate_wr_scarcity()`` returns empty (no ``target_share`` data).
+Net effect on the five calculators:
+- With ``enrich=True`` (default): all five calculators can produce
+  results, bounded by the coverage/accuracy caveats in
+  ``api/nfl_enrichment.py``.
+- With ``enrich=False``: only ``calculate_custom_value()`` and
+  ``calculate_qb_floor()`` work fully (both only need ``stats``);
+  ``apply_rookie_bump()``, ``find_ir_stashes()``, and
+  ``evaluate_wr_scarcity()`` return empty.
 
 Fetching season stats is one extra Yahoo API call *per player*, so
 `build_players_dataframe` takes a `count_limit` to keep it fast/well under
@@ -142,6 +143,9 @@ def build_players_dataframe(
     players: List[Any],
     fetch_stats: bool = True,
     count_limit: Optional[int] = 50,
+    enrich: bool = True,
+    season: Optional[int] = None,
+    through_week: Optional[int] = None,
 ) -> pd.DataFrame:
     """Convert a list of yfpy `Player` objects (e.g. from
     `auth.get_waiver_wire_players()`) into the DataFrame shape the
@@ -158,6 +162,15 @@ def build_players_dataframe(
         count_limit: Caps how many players get stats fetched, to stay well
             under Yahoo's rate limits. `None` fetches all -- use with a
             small waiver-wire pool only.
+        enrich: If True (default), backfill `is_rookie`/`draft_capital`/
+            `target_share`/`deep_target_share`/`projected_points_by_week`
+            from nfl_data_py via `api/nfl_enrichment.py`. See that module's
+            docstring for coverage/accuracy caveats. Set False to skip and
+            leave those fields at their Yahoo-only defaults.
+        season: NFL season year for enrichment data (only used if
+            `enrich=True`). Defaults to `nfl_enrichment.default_nfl_season()`.
+        through_week: Only use enrichment data through this week (only used
+            if `enrich=True`). Defaults to all available weeks.
 
     Returns:
         pd.DataFrame: One row per player, ready for `data/calculators.py`.
@@ -174,4 +187,11 @@ def build_players_dataframe(
                 logger.warning("Couldn't fetch season stats for %s: %s", getattr(player, "player_key", "?"), exc)
         rows.append(player_to_row(player, stat_id_map))
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+
+    if enrich and not df.empty:
+        from api.nfl_enrichment import default_nfl_season, enrich_players_dataframe
+
+        df = enrich_players_dataframe(df, season or default_nfl_season(), through_week)
+
+    return df

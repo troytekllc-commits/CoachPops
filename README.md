@@ -13,8 +13,15 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
     `get_league_settings()`, `get_waiver_wire_players()`, and `get_rosters()`.
   - `player_mapper.py` — converts yfpy `Player` objects into the DataFrame
     shape the calculators/dashboard expect, remapping Yahoo's stat IDs to
-    stat names via this league's scoring settings. Documents which fields
-    (rookie/draft capital, target share, projections) Yahoo doesn't provide.
+    stat names via this league's scoring settings, and (by default) calling
+    `nfl_enrichment.py` to backfill what Yahoo doesn't provide.
+  - `nfl_enrichment.py` — backfills `is_rookie`/`draft_capital`/
+    `target_share`/`deep_target_share`/a rough `projected_points_by_week`
+    baseline from `nfl_data_py`, joined onto Yahoo players via nflverse's
+    own `yahoo_id` crosswalk column (a real ID match, not name/team
+    guessing). See its module docstring for coverage (~half of rostered
+    players) and accuracy caveats (the projection is a flat points-per-game
+    baseline, not a true weekly projection).
 - `data/` — analytics engines and local data/caches
   - `calculators.py` — five pandas-based scoring engines tuned for this
     league's 3-WR / 6-bench / 2-IR format: `calculate_custom_value()`,
@@ -92,10 +99,13 @@ live option only appears once `private.json` exists — run
 `scripts/yahoo_login.py` first so the OAuth handshake doesn't happen mid
 Streamlit-rerun).
 
-Note: Yahoo's API doesn't expose NFL draft capital, target share, or
-forward-looking projections, so with live data the **Rookie Radar**, **IR
-Stash Targets**, and **WR3 Floor Finder** tabs will show empty until those
-fields are backfilled from an external source (e.g. `nfl_data_py`) — see
-the module docstring in `api/player_mapper.py` for exactly what's missing
-and why. **League Optimizer** and **QB Konami Code** work fully against
-live data today, since they only need Yahoo's own season stats.
+With live data selected, a **"Backfill rookie/target-share/projection
+data"** checkbox (on by default) pulls in `nfl_data_py` via
+`api/nfl_enrichment.py` to fill in what Yahoo's API doesn't provide, so
+**Rookie Radar**, **IR Stash Targets**, and **WR3 Floor Finder** have
+something to show. Coverage is roughly half of rostered players (nflverse's
+`yahoo_id` crosswalk doesn't cover everyone), and the weekly projection
+feeding IR Stash Targets is a flat points-per-game baseline, not a true
+projection — see `api/nfl_enrichment.py`'s module docstring for the full
+picture. Turn the checkbox off to see Yahoo-only data instead, in which
+case only **League Optimizer** and **QB Konami Code** will show results.

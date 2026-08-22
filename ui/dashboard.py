@@ -473,8 +473,9 @@ def render_wr3_floor_finder(players_df: pd.DataFrame) -> None:
     )
 
 
-def load_live_players_df(count_limit: int) -> pd.DataFrame:
-    """Pull real waiver-wire players via YahooAuthManager + player_mapper.
+def load_live_players_df(count_limit: int, enrich: bool, season: int) -> pd.DataFrame:
+    """Pull real waiver-wire players via YahooAuthManager + player_mapper,
+    optionally backfilled with nfl_data_py via nfl_enrichment.
 
     Raises whatever YahooAuthManager/player_mapper raises (missing
     private.json, auth failure, etc.) -- the caller in main() decides how
@@ -485,10 +486,14 @@ def load_live_players_df(count_limit: int) -> pd.DataFrame:
 
     auth = YahooAuthManager()
     free_agents = auth.get_waiver_wire_players(count_limit=count_limit)
-    return build_players_dataframe(auth, free_agents, count_limit=count_limit)
+    return build_players_dataframe(
+        auth, free_agents, count_limit=count_limit, enrich=enrich, season=season
+    )
 
 
 def main() -> None:
+    from api.nfl_enrichment import default_nfl_season
+
     st.set_page_config(page_title="CoachPops Fantasy Manager", page_icon="🏈", layout="wide")
     st.title("🏈 CoachPops Fantasy Football Manager")
 
@@ -508,18 +513,37 @@ def main() -> None:
             help="Each player costs one extra Yahoo API call for season stats.",
             disabled=data_source != "Live Yahoo data",
         )
+        enrich_with_nfl_data = st.checkbox(
+            "Backfill rookie/target-share/projection data (nfl_data_py)",
+            value=True,
+            disabled=data_source != "Live Yahoo data",
+            help="Joins in nflverse data via a yahoo_id crosswalk -- covers "
+                 "roughly half of rostered players. See api/nfl_enrichment.py.",
+        )
+        nfl_season = st.number_input(
+            "NFL season", min_value=2015, max_value=2035, value=default_nfl_season(), step=1,
+            disabled=data_source != "Live Yahoo data" or not enrich_with_nfl_data,
+        )
 
     if data_source == "Live Yahoo data":
         try:
             with st.spinner("Fetching live waiver wire data from Yahoo..."):
-                players_df = load_live_players_df(live_count_limit)
+                players_df = load_live_players_df(live_count_limit, enrich_with_nfl_data, int(nfl_season))
             st.success("Connected to Yahoo -- showing live waiver wire data.", icon="✅")
-            st.caption(
-                "Note: `is_rookie`, `draft_capital`, `target_share`, `deep_target_share`, and "
-                "`projected_points_by_week` aren't provided by Yahoo's API, so Rookie Radar, "
-                "IR Stash Targets, and WR3 Floor Finder will show empty until those are "
-                "backfilled from an external source -- see `api/player_mapper.py`."
-            )
+            if enrich_with_nfl_data:
+                st.caption(
+                    "Rookie/target-share/projection data backfilled from nfl_data_py "
+                    f"({int(nfl_season)} season). Coverage is roughly half of rostered "
+                    "players, and the weekly projection is a flat points-per-game "
+                    "baseline, not a true projection -- see `api/nfl_enrichment.py`."
+                )
+            else:
+                st.caption(
+                    "Backfill disabled -- `is_rookie`, `draft_capital`, `target_share`, "
+                    "`deep_target_share`, and `projected_points_by_week` are all at their "
+                    "empty Yahoo-only defaults, so Rookie Radar, IR Stash Targets, and "
+                    "WR3 Floor Finder will show empty."
+                )
         except Exception as exc:
             st.error(
                 f"Couldn't load live Yahoo data ({exc}). Run `python scripts/yahoo_login.py` "
