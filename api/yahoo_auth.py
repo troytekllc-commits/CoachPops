@@ -136,9 +136,18 @@ class YahooAuthManager:
             json.dump(self._credentials, f, indent=2)
 
     def _persist_refreshed_token(self) -> None:
-        """Copy the (possibly newly-refreshed) OAuth token back into private.json."""
+        """Copy the (possibly newly-refreshed) OAuth token back into
+        private.json. Called on every `.query` access, not just the first
+        -- yfpy/yahoo_oauth can refresh the in-memory token again later in
+        a session (e.g. when the access token itself expires mid-session,
+        not just the refresh token), and this used to only ever persist
+        once, at construction time, silently drifting out of sync with
+        whatever yfpy holds in memory afterward. Only actually writes to
+        disk when the token changed since the last persist, so calling
+        this on every `.query` access doesn't rewrite the file on every
+        single API call."""
         token_dict = getattr(self._query, "_yahoo_access_token_dict", None)
-        if token_dict:
+        if token_dict and token_dict != self._credentials.get("access_token"):
             self._credentials["access_token"] = token_dict
             self._save_private_json()
 
@@ -183,7 +192,7 @@ class YahooAuthManager:
                 env_var_fallback=False,  # we manage credentials ourselves via private.json
                 browser_callback=True,   # opens a browser tab on first auth / once the refresh token dies
             )
-            self._persist_refreshed_token()
+        self._persist_refreshed_token()
         return self._query
 
     # ------------------------------------------------------------------

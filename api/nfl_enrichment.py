@@ -59,7 +59,10 @@ import pandas as pd
 DEFAULT_COORDINATOR_CHANGES_CSV = Path(__file__).resolve().parent.parent / "data" / "coaching_changes.csv"
 
 # Weeks used to build the flat rest-of-season baseline (see module docstring).
-PROJECTION_WEEKS = range(1, 18)
+# The modern NFL regular season runs weeks 1-18 (verified against
+# import_schedules()/import_weekly_data() -- both report week values up to
+# 18) -- range(1, 19) to actually include week 18, not range(1, 18).
+PROJECTION_WEEKS = range(1, 19)
 
 
 def default_nfl_season() -> int:
@@ -361,13 +364,17 @@ def build_game_script_lookup(season: int, week: Optional[int] = None) -> Dict[st
             already final.
     """
     games = load_schedules(season)
-    games = games.dropna(subset=["spread_line", "total_line"])
 
     if week is None:
+        # Determined from every game this season, BEFORE dropping rows
+        # missing Vegas lines below -- otherwise, if the true next week's
+        # lines haven't posted yet while a later week's have, this would
+        # silently report the later week's context as if it were "next."
         upcoming = games[games["home_score"].isna()]
         week = int(upcoming["week"].min()) if not upcoming.empty else int(games["week"].max())
 
     games = games[games["week"] == week]
+    games = games.dropna(subset=["spread_line", "total_line"])
 
     lookup: Dict[str, dict] = {}
     for _, row in games.iterrows():

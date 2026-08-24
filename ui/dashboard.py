@@ -44,11 +44,12 @@ from data.calculators import (  # noqa: E402
 
 
 def _weekly_projection(early_avg: float, late_avg: float) -> dict:
-    """Deterministic weeks 1-17 projection dict: `early_avg` through week 9,
+    """Deterministic weeks 1-18 projection dict: `early_avg` through week 9,
     `late_avg` from week 10 (back half) on, with a small fixed wiggle so the
-    numbers don't look perfectly flat."""
+    numbers don't look perfectly flat. Matches the real 18-week NFL regular
+    season -- see api/nfl_enrichment.py's PROJECTION_WEEKS."""
     projection = {}
-    for week in range(1, 18):
+    for week in range(1, 19):
         base = late_avg if week >= 10 else early_avg
         wiggle = (week % 3) * 0.4 - 0.4
         projection[str(week)] = round(base + wiggle, 1)
@@ -578,25 +579,40 @@ def _style_table(df: pd.DataFrame, highlight_col: Optional[str] = None, higher_i
             should get the darker shade (True for a score, False for a
             rank or a rate where lower is better, e.g. sack rate).
     """
+    df = df.copy()
+
+    # The highlight gradient needs to rank highlight_col's REAL numeric
+    # values -- compute that before the formatting step below replaces the
+    # column with display strings.
+    highlight_ranked = None
+    if highlight_col and highlight_col in df.columns and df[highlight_col].notna().any():
+        highlight_ranked = df[highlight_col].rank(pct=True, ascending=higher_is_better)
+
+    # Styler's default number rendering shows full float precision (e.g.
+    # "282.700000") -- nothing else in this app does that, so trim it back
+    # to a clean, comma-grouped, trailing-zero-free number to match how
+    # st.dataframe rendered these same columns before styling. This is done
+    # by baking the formatted string directly into the DataFrame (rather
+    # than via Styler.format(na_rep=...)) because Streamlit's actual
+    # dataframe widget shows its own literal "None" for a null cell
+    # regardless of what na_rep a Styler specifies -- confirmed directly:
+    # na_rep is honored in the Styler's own to_html() but not in the
+    # rendered app. Baking the placeholder into the cell's real content is
+    # the only way to control what actually displays.
+    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    for col in numeric_cols:
+        df[col] = df[col].apply(lambda v: "–" if pd.isna(v) else f"{v:,.4g}")
+
     def _zebra(row: pd.Series) -> list:
         color = _ZEBRA_ROW_COLORS[row.name % 2]
         return [f"background-color: {color}"] * len(row)
 
     styler = df.style.apply(_zebra, axis=1)
 
-    # Styler's default number rendering shows full float precision (e.g.
-    # "282.700000") -- nothing else in this app does that, so trim it back
-    # to a clean, comma-grouped, trailing-zero-free number to match how
-    # st.dataframe rendered these same columns before styling.
-    numeric_cols = df.select_dtypes(include="number").columns.tolist()
-    if numeric_cols:
-        styler = styler.format("{:,.4g}", subset=numeric_cols, na_rep="–")
-
-    if highlight_col and highlight_col in df.columns and df[highlight_col].notna().any():
-        def _gradient(series: pd.Series) -> list:
-            ranked = series.rank(pct=True, ascending=higher_is_better)
+    if highlight_ranked is not None:
+        def _gradient(_col: pd.Series) -> list:
             styles = []
-            for value in ranked:
+            for value in highlight_ranked:
                 if pd.isna(value):
                     styles.append("")
                 else:

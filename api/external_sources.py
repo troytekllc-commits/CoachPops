@@ -48,13 +48,39 @@ def _load_sleeper_players() -> dict:
 
 def build_yahoo_id_to_sleeper_id_map() -> Dict[str, str]:
     """``{yahoo_id: sleeper_player_id}`` -- only for players Sleeper has
-    mapped to a `yahoo_id` (see module docstring's coverage caveat)."""
+    mapped to a `yahoo_id` (see module docstring's coverage caveat).
+
+    A handful of `yahoo_id`s are claimed by more than one Sleeper player
+    (confirmed live: 13 of ~6,750 mapped IDs) -- most of those collisions
+    are Sleeper's own "Duplicate Player" placeholder rows
+    (``first_name == "Duplicate Player"``, ``active == False``), not a
+    genuine two-real-players collision. A naive last-wins dict would
+    silently attribute trending data to whichever entry happened to
+    iterate last, including a placeholder -- this prefers a real, active
+    entry when one exists.
+    """
     players = _load_sleeper_players()
-    return {
-        str(info["yahoo_id"]): sleeper_id
-        for sleeper_id, info in players.items()
-        if info.get("yahoo_id")
-    }
+
+    by_yahoo_id: Dict[str, list] = {}
+    for sleeper_id, info in players.items():
+        yahoo_id = info.get("yahoo_id")
+        if yahoo_id:
+            by_yahoo_id.setdefault(str(yahoo_id), []).append((sleeper_id, info))
+
+    result: Dict[str, str] = {}
+    for yahoo_id, entries in by_yahoo_id.items():
+        if len(entries) == 1:
+            result[yahoo_id] = entries[0][0]
+            continue
+        non_placeholder = [e for e in entries if e[1].get("full_name") != "Duplicate Player"]
+        # Prefer active-and-real, then any real (even inactive -- still a
+        # named person, not a placeholder), then fall back to the first
+        # entry only if every candidate is a "Duplicate Player" placeholder.
+        active_real = [e for e in non_placeholder if e[1].get("active")]
+        winner = active_real[0] if active_real else (non_placeholder[0] if non_placeholder else entries[0])
+        result[yahoo_id] = winner[0]
+
+    return result
 
 
 def fetch_trending_adds(lookback_hours: int = 24, limit: int = 200) -> Dict[str, int]:

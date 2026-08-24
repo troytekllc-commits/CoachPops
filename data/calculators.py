@@ -69,9 +69,12 @@ Not every calculator needs every column -- see each docstring below.
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, Optional
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # Back-half-of-season boundary. A typical fantasy regular season runs weeks
 # 1-14 (byes done, playoffs starting ~week 15), so week 10 is a reasonable
@@ -294,6 +297,15 @@ def evaluate_wr_scarcity(
     receiver with heavy target share and a low deep-target rate outranks a
     boom/bust deep threat with a similar target share.
 
+    A qualifying WR with a real ``target_share`` but a missing
+    ``deep_target_share`` (the roughly half of rostered players outside
+    nflverse's ``yahoo_id`` crosswalk) is treated as having *no* known
+    deep-ball dependency -- benefit of the doubt, 0 -- rather than
+    propagating ``NaN`` into ``wr_floor_score``. Un-fixed, that ``NaN``
+    would sort to the bottom via ``sort_values``'s default
+    ``na_position="last"``, silently burying a receiver with the *best*
+    target share in the qualifying pool as if they were the worst option.
+
     Args:
         players_df: Player records with ``display_position``,
             ``target_share``, and ``deep_target_share``.
@@ -307,7 +319,8 @@ def evaluate_wr_scarcity(
     wrs = players_df[players_df["display_position"] == "WR"].copy()
     wrs = wrs[wrs["target_share"] >= min_target_share]
 
-    wrs["wr_floor_score"] = (wrs["target_share"] * 100) - (wrs["deep_target_share"] * deep_target_penalty)
+    deep_target_share = wrs["deep_target_share"].fillna(0)
+    wrs["wr_floor_score"] = (wrs["target_share"] * 100) - (deep_target_share * deep_target_penalty)
     return wrs.sort_values("wr_floor_score", ascending=False).reset_index(drop=True)
 
 
@@ -360,7 +373,12 @@ def _efficiency_ahead_of_production_gap(players_df: pd.DataFrame) -> pd.Series:
 
     for _, group_index in players_df.groupby("display_position").groups.items():
         group = players_df.loc[group_index]
-        if len(group) < MIN_POSITION_GROUP_FOR_EFFICIENCY_CHECK or group["target_share"].isna().all():
+        # Bug fix: this used to check the group's total SIZE, not how many
+        # of them actually have a real (non-null) target_share -- so a
+        # group of 3 with only 2 real values still computed a percentile
+        # off just those 2, exactly the "misleading rank" this docstring
+        # says is guarded against.
+        if group["target_share"].notna().sum() < MIN_POSITION_GROUP_FOR_EFFICIENCY_CHECK:
             continue
         target_share_percentile = group["target_share"].rank(pct=True)
         production_percentile = custom_value.loc[group_index].rank(pct=True)
@@ -636,7 +654,7 @@ def _specialist_frame(sub_df: pd.DataFrame, raw_col: str, label_fmt) -> pd.DataF
     by the engine itself), with a human-readable label carrying the raw value."""
     if sub_df.empty or "player_id" not in sub_df.columns:
         return pd.DataFrame(columns=["player_id", "specialist_pct", "specialist_label"])
-    out = sub_df[["player_id", raw_col]].copy()
+    out = sub_df[["player_id", raw_col]].drop_duplicates("player_id").copy()
     out["specialist_pct"] = out[raw_col].rank(pct=True)
     out["specialist_label"] = out[raw_col].apply(label_fmt)
     return out[["player_id", "specialist_pct", "specialist_label"]]
@@ -684,15 +702,41 @@ def build_priority_board(
     w = weights or PRIORITY_WEIGHTS
     df = players_df.copy()
 
+    if df.empty:
+        # `df.apply(func, axis=1)` on a zero-row DataFrame can't infer the
+        # function's return shape (there's no row to actually call it on),
+        # and raises when the result is assigned back to a single column --
+        # so every column this function adds is filled in explicitly here
+        # instead of falling through into the merges/applies below.
+        for col in ("custom_value", "production_pct", "breakout_score", "opportunity_pct",
+                    "specialist_pct", "team_context_pct", "priority_score"):
+            df[col] = pd.Series(dtype=float)
+        for col in ("breakout_signals", "caution_flags", "priority_signals", "priority_cautions"):
+            df[col] = pd.Series(dtype=object)
+        return df
+
+    # Every merge below is keyed on player_id -- a duplicate would fan out on
+    # EVERY subsequent merge (multiplicatively), silently corrupting the
+    # whole board with meaningless duplicate rows. Guard against it here
+    # rather than trusting every caller's input is already unique.
+    if df["player_id"].duplicated().any():
+        dupe_count = int(df["player_id"].duplicated().sum())
+        logger.warning(
+            "build_priority_board(): players_df has %d duplicate player_id row(s) -- "
+            "keeping the first occurrence of each.",
+            dupe_count,
+        )
+        df = df.drop_duplicates(subset=["player_id"], keep="first").reset_index(drop=True)
+
     # --- production: this league's real scoring, ranked within position ---
-    value_df = calculate_custom_value(df)[["player_id", "custom_value"]]
+    value_df = calculate_custom_value(df)[["player_id", "custom_value"]].drop_duplicates("player_id")
     df = df.merge(value_df, on="player_id", how="left")
     df["production_pct"] = df.groupby("display_position")["custom_value"].rank(pct=True).fillna(0.5)
 
     # --- opportunity: Breakout Radar's composite, ranked pool-wide ---
     breakout_df = find_breakout_signals(df, min_score=float("-inf"))[
         ["player_id", "breakout_score", "breakout_signals", "caution_flags"]
-    ]
+    ].drop_duplicates("player_id")
     df = df.merge(breakout_df, on="player_id", how="left")
     df["breakout_score"] = df["breakout_score"].fillna(0.0)
     df["breakout_signals"] = df["breakout_signals"].apply(lambda s: s if isinstance(s, list) else [])
@@ -737,7 +781,7 @@ def build_priority_board(
     # for all 32 teams, but isn't independently re-verified here.
     df["team_context_pct"] = 0.5
     if oline_rankings is not None and not oline_rankings.empty:
-        oline_pct = oline_rankings[["team", "oline_score"]].copy()
+        oline_pct = oline_rankings[["team", "oline_score"]].drop_duplicates("team").copy()
         oline_pct["team_context_pct"] = oline_pct["oline_score"].rank(pct=True)
         df = df.merge(
             oline_pct[["team", "team_context_pct"]].rename(columns={"team_context_pct": "_oline_pct"}),

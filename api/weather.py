@@ -144,13 +144,55 @@ def _is_effectively_indoors(team: str, roof: Optional[str]) -> bool:
     return team in RETRACTABLE_ROOF_USUALLY_CLOSED
 
 
-def _is_true_home_game(team: str, stadium: Optional[str]) -> bool:
-    """False for a neutral-site/international game, where `team`'s usual
-    home-stadium coordinates in `TEAM_STADIUM_INFO` would be wrong."""
-    info = TEAM_STADIUM_INFO.get(team)
-    if not info or not isinstance(stadium, str) or not stadium:
+def _derive_home_stadium_names(games: pd.DataFrame) -> Dict[str, str]:
+    """For each `home_team`, the `stadium` name that appears most often
+    among that team's home games in `games` -- self-derived from the
+    schedule itself rather than a hardcoded, rename-prone lookup table.
+
+    Why this exists: stadiums get renamed (corporate naming-rights deals
+    change every few years), and nflverse's own `stadium` column isn't
+    guaranteed to reflect the current name either -- confirmed directly:
+    for the 2025 season, nflverse's schedule shows "New Era Field" for
+    Buffalo's home games, not the actual current name "Highmark Stadium"
+    (in use since 2021). A hardcoded name-to-team table drifts out of
+    sync with either source over time. Voting on the season's own data
+    self-corrects: whatever name nflverse used for that team's home games
+    that season will always match, and a neutral-site/international
+    game's stadium name will be a true minority value (at most one game)
+    and so still correctly excluded.
+    """
+    home_games = games.dropna(subset=["stadium", "home_team"])
+    if home_games.empty:
+        return {}
+    return (
+        home_games.groupby("home_team")["stadium"]
+        .agg(lambda names: names.value_counts().idxmax())
+        .to_dict()
+    )
+
+
+def _is_true_home_game(team: str, stadium: Optional[str], expected_stadium: Optional[str] = None) -> bool:
+    """False for a neutral-site/international game, where `team`'s home
+    stadium coordinates in `TEAM_STADIUM_INFO` would be wrong.
+
+    `expected_stadium` (normally `_derive_home_stadium_names()`'s answer
+    for this team, self-derived from the same season's own schedule data)
+    is preferred when given -- it can't drift out of date the way a
+    hardcoded name can. Falls back to `TEAM_STADIUM_INFO`'s hardcoded name
+    only when the caller doesn't have season-wide schedule data on hand
+    (e.g. a direct/unit-test call to `fetch_game_weather()`) -- that
+    fallback name is a best effort and may itself be stale; it's not the
+    primary source of truth for real usage via `build_game_weather_lookup()`.
+    """
+    if expected_stadium:
+        home_name = expected_stadium.lower()
+    else:
+        info = TEAM_STADIUM_INFO.get(team)
+        if not info:
+            return False
+        home_name = info[2].lower()
+    if not isinstance(stadium, str) or not stadium:
         return False
-    home_name = info[2].lower()
     return home_name in stadium.lower() or stadium.lower() in home_name
 
 
@@ -186,7 +228,11 @@ def _fetch_forecast_blocks(lat: float, lon: float, api_key: str) -> tuple:
 
 
 def fetch_game_weather(
-    team: str, roof: Optional[str], stadium: Optional[str], game_datetime_utc: Optional[datetime]
+    team: str,
+    roof: Optional[str],
+    stadium: Optional[str],
+    game_datetime_utc: Optional[datetime],
+    expected_stadium: Optional[str] = None,
 ) -> Optional[dict]:
     """Best-effort forecasted conditions for one team's next home game.
 
@@ -199,11 +245,19 @@ def fetch_game_weather(
     than the free tier's 5-day forecast window, or the request itself
     fails (logged as a warning, same as every other optional enrichment
     source in this project).
+
+    Args:
+        expected_stadium: This team's real home stadium name, preferably
+            self-derived via `_derive_home_stadium_names()` from the same
+            season's schedule data (what `build_game_weather_lookup()`
+            passes) -- see `_is_true_home_game()`'s docstring for why that
+            beats a hardcoded name. Falls back to `TEAM_STADIUM_INFO` if
+            omitted (e.g. a direct/unit-test call).
     """
     if _is_effectively_indoors(team, roof):
         return {"wind_mph": None, "precip_probability": None, "temp_f": None, "game_is_dome": True}
 
-    if game_datetime_utc is None or not _is_true_home_game(team, stadium):
+    if game_datetime_utc is None or not _is_true_home_game(team, stadium, expected_stadium):
         return None
 
     api_key = _load_api_key()
@@ -250,9 +304,20 @@ def build_game_weather_lookup(season: int, week: Optional[int] = None) -> Dict[s
     something is wrong.
     """
     games = load_schedules(season)
-    games = games.dropna(subset=["spread_line", "total_line"])
+
+    # Self-derive each team's real home stadium name from every game this
+    # season (see _derive_home_stadium_names()'s docstring for why this
+    # beats a hardcoded table) -- computed before filtering to one week,
+    # since more games this season means a more reliable majority vote.
+    home_stadium_names = _derive_home_stadium_names(games)
 
     if week is None:
+        # Determined from every game this season, BEFORE filtering by any
+        # other column -- weather doesn't actually need spread_line/
+        # total_line (unlike build_game_script_lookup(), this function's
+        # sibling in api/nfl_enrichment.py), so this used to filter on
+        # them anyway by copy-paste, which could silently pick a later
+        # week if that week's Vegas lines hadn't posted yet.
         upcoming = games[games["home_score"].isna()]
         week = int(upcoming["week"].min()) if not upcoming.empty else int(games["week"].max())
 
@@ -262,8 +327,11 @@ def build_game_weather_lookup(season: int, week: Optional[int] = None) -> Dict[s
     for _, row in games.iterrows():
         home = _normalize_team_abbr(row["home_team"])
         away = _normalize_team_abbr(row["away_team"])
+        expected_stadium = home_stadium_names.get(row["home_team"])
         game_dt = _game_datetime_utc(row.get("gameday"), row.get("gametime"))
-        weather = fetch_game_weather(home, row.get("roof"), row.get("stadium"), game_dt)
+        weather = fetch_game_weather(
+            home, row.get("roof"), row.get("stadium"), game_dt, expected_stadium=expected_stadium
+        )
         if weather is None:
             continue
         lookup[home] = weather

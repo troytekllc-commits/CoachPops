@@ -213,7 +213,11 @@ def build_players_dataframe(
             docstring for coverage/accuracy caveats. Set False to skip and
             leave those fields at their Yahoo-only defaults.
         season: NFL season year for enrichment data (only used if
-            `enrich=True`). Defaults to `nfl_enrichment.default_nfl_season()`.
+            `enrich=True`). Defaults to `nfl_enrichment.default_stats_season()`
+            -- NOT `default_nfl_season()`, which is the roster/draft-capital
+            season and can be a season with zero played games (e.g. before
+            Week 1); enrichment needs actual weekly stats/PBP/snap counts,
+            which 404 for a season with nothing played yet.
         through_week: Only use enrichment data through this week (only used
             if `enrich=True`). Defaults to all available weeks.
         include_sleeper_trending: If True (default), backfill
@@ -237,12 +241,23 @@ def build_players_dataframe(
                 logger.warning("Couldn't fetch season stats for %s: %s", getattr(player, "player_key", "?"), exc)
         rows.append(player_to_row(player, stat_id_map))
 
-    df = pd.DataFrame(rows)
+    # `pd.DataFrame([])` (an empty waiver wire -- e.g. every free agent
+    # already claimed) has zero COLUMNS, not just zero rows -- every
+    # calculator in data/calculators.py indexes into named columns
+    # (df["stats"], df["display_position"], etc.) before ever checking
+    # `.empty`, so that shape crashes every render_*() in ui/dashboard.py
+    # with a KeyError instead of the intended "no players" message.
+    # player_to_row() on a bare `object()` triggers every one of its
+    # `getattr(..., default)` fallbacks, producing a template row with
+    # every expected key -- the single source of truth for this schema,
+    # so it can't silently drift from what player_to_row() actually returns.
+    template_columns = list(player_to_row(object(), stat_id_map).keys())
+    df = pd.DataFrame(rows, columns=template_columns)
 
     if enrich and not df.empty:
-        from api.nfl_enrichment import default_nfl_season, enrich_players_dataframe
+        from api.nfl_enrichment import default_stats_season, enrich_players_dataframe
 
-        df = enrich_players_dataframe(df, season or default_nfl_season(), through_week)
+        df = enrich_players_dataframe(df, season or default_stats_season(), through_week)
 
     if include_sleeper_trending and not df.empty:
         try:
