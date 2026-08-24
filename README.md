@@ -76,7 +76,11 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
     **TE Difference-Makers**, **O-Line Power Rankings**, **Team Change
     Impact**), with a sidebar toggle between mock data and live Yahoo
     data. The last two tabs work with zero Yahoo access — pure
-    `nfl_data_py`.
+    `nfl_data_py`. Every tab's table is styled via `_style_table()` to
+    match the blue theme (`.streamlit/config.toml`): light zebra-striped
+    row banding plus a blue-intensity gradient (darker = better) on that
+    tab's key ranking column, hand-interpolated between the theme's two
+    blues rather than pulling in matplotlib.
 
 ### A note on season defaults
 

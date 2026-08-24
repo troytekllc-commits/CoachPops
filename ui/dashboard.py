@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Optional
 
 import altair as alt
 import pandas as pd
@@ -521,6 +522,72 @@ def _with_display_name(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# Matches `.streamlit/config.toml`'s theme -- `backgroundColor` / `secondaryBackgroundColor`
+# for zebra banding, `primaryColor` as the dark end of the gradient below.
+_ZEBRA_ROW_COLORS = ("#FFFFFF", "#EFF6FF")
+_GRADIENT_LIGHT_RGB = (239, 246, 255)  # #EFF6FF
+_GRADIENT_DARK_RGB = (37, 99, 235)  # #2563EB (theme primaryColor)
+
+
+def _blue_shade(t: float) -> str:
+    """Linear-interpolate between the theme's light and primary blue for a
+    0-1 value `t`, returning a hex color."""
+    t = max(0.0, min(1.0, t))
+    r, g, b = (
+        round(low + (high - low) * t) for low, high in zip(_GRADIENT_LIGHT_RGB, _GRADIENT_DARK_RGB)
+    )
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _style_table(df: pd.DataFrame, highlight_col: Optional[str] = None, higher_is_better: bool = True):
+    """Style a table for `st.dataframe` using this app's blue theme instead
+    of Streamlit's flat default: light zebra-striped row banding (so
+    adjacent rows are easy to tell apart at a glance) plus, optionally, a
+    blue-intensity gradient on one key ranking column -- darker/bolder blue
+    for a better value, alongside the raw number.
+
+    Doesn't depend on matplotlib (which `Styler.background_gradient()`
+    needs and this project doesn't otherwise use) -- colors are
+    hand-interpolated between the theme's two blues via `_blue_shade()`.
+
+    Args:
+        highlight_col: Column to apply the gradient to (skipped if absent
+            or entirely null -- e.g. a tab with no single "score" column).
+        higher_is_better: Whether a higher raw value in `highlight_col`
+            should get the darker shade (True for a score, False for a
+            rank or a rate where lower is better, e.g. sack rate).
+    """
+    def _zebra(row: pd.Series) -> list:
+        color = _ZEBRA_ROW_COLORS[row.name % 2]
+        return [f"background-color: {color}"] * len(row)
+
+    styler = df.style.apply(_zebra, axis=1)
+
+    # Styler's default number rendering shows full float precision (e.g.
+    # "282.700000") -- nothing else in this app does that, so trim it back
+    # to a clean, comma-grouped, trailing-zero-free number to match how
+    # st.dataframe rendered these same columns before styling.
+    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    if numeric_cols:
+        styler = styler.format("{:,.4g}", subset=numeric_cols, na_rep="–")
+
+    if highlight_col and highlight_col in df.columns and df[highlight_col].notna().any():
+        def _gradient(series: pd.Series) -> list:
+            ranked = series.rank(pct=True, ascending=higher_is_better)
+            styles = []
+            for value in ranked:
+                if pd.isna(value):
+                    styles.append("")
+                else:
+                    text_color = "white" if value >= 0.55 else "#0F172A"
+                    styles.append(f"background-color: {_blue_shade(value)}; color: {text_color}; font-weight: 600")
+            return styles
+
+        styler = styler.apply(_gradient, subset=[highlight_col])
+
+    return styler
+
+
 def render_league_optimizer(players_df: pd.DataFrame) -> None:
     st.subheader("Waiver Wire, Ranked by Your League's Custom Scoring")
     st.caption(
@@ -529,9 +596,11 @@ def render_league_optimizer(players_df: pd.DataFrame) -> None:
         "`data/calculators.py` -- swap in `get_league_settings()` for the real thing)."
     )
     ranked = _with_display_name(calculate_custom_value(players_df))
+    display = ranked[["player_name", "editorial_team_abbr", "display_position", "status", "custom_value"]].rename(
+        columns={"editorial_team_abbr": "team", "display_position": "pos", "custom_value": "custom_value_pts"}
+    )
     st.dataframe(
-        ranked[["player_name", "editorial_team_abbr", "display_position", "status", "custom_value"]]
-        .rename(columns={"editorial_team_abbr": "team", "display_position": "pos", "custom_value": "custom_value_pts"}),
+        _style_table(display, highlight_col="custom_value_pts"),
         use_container_width=True,
         hide_index=True,
     )
@@ -554,15 +623,16 @@ def render_rookie_radar(players_df: pd.DataFrame) -> None:
         return f"Round {dc['round']}, Pick {dc['pick']}"
 
     bumped["draft_capital_label"] = bumped["draft_capital"].apply(draft_label)
+    display = bumped[
+        ["player_name", "editorial_team_abbr", "display_position", "draft_capital_label",
+         "back_half_points_base", "back_half_points_bumped"]
+    ].rename(columns={
+        "editorial_team_abbr": "team", "display_position": "pos",
+        "draft_capital_label": "draft_capital",
+        "back_half_points_base": "back_half_pts_base", "back_half_points_bumped": "back_half_pts_bumped",
+    })
     st.dataframe(
-        bumped[
-            ["player_name", "editorial_team_abbr", "display_position", "draft_capital_label",
-             "back_half_points_base", "back_half_points_bumped"]
-        ].rename(columns={
-            "editorial_team_abbr": "team", "display_position": "pos",
-            "draft_capital_label": "draft_capital",
-            "back_half_points_base": "back_half_pts_base", "back_half_points_bumped": "back_half_pts_bumped",
-        }),
+        _style_table(display, highlight_col="back_half_pts_bumped"),
         use_container_width=True,
         hide_index=True,
     )
@@ -603,11 +673,11 @@ def render_qb_konami_code(players_df: pd.DataFrame) -> None:
         .interactive()
     )
     st.altair_chart(chart, use_container_width=True)
+    display = qbs[["player_name", "editorial_team_abbr", "passing_points", "qb_floor_score", "ngs_cpoe"]].rename(
+        columns={"editorial_team_abbr": "team", "qb_floor_score": "rushing_floor_score", "ngs_cpoe": "CPOE"}
+    )
     st.dataframe(
-        qbs[["player_name", "editorial_team_abbr", "passing_points", "qb_floor_score", "ngs_cpoe"]]
-        .rename(columns={
-            "editorial_team_abbr": "team", "qb_floor_score": "rushing_floor_score", "ngs_cpoe": "CPOE",
-        }),
+        _style_table(display, highlight_col="rushing_floor_score"),
         use_container_width=True,
         hide_index=True,
     )
@@ -623,10 +693,11 @@ def render_ir_stash_targets(players_df: pd.DataFrame) -> None:
     if stashes.empty:
         st.info("No IR-eligible stash targets clear the back-half projection threshold right now.")
         return
+    display = stashes[
+        ["player_name", "editorial_team_abbr", "display_position", "status", "projected_back_half_points"]
+    ].rename(columns={"editorial_team_abbr": "team", "display_position": "pos"})
     st.dataframe(
-        stashes[
-            ["player_name", "editorial_team_abbr", "display_position", "status", "projected_back_half_points"]
-        ].rename(columns={"editorial_team_abbr": "team", "display_position": "pos"}),
+        _style_table(display, highlight_col="projected_back_half_points"),
         use_container_width=True,
         hide_index=True,
     )
@@ -642,10 +713,11 @@ def render_wr3_floor_finder(players_df: pd.DataFrame) -> None:
     if safe_wrs.empty:
         st.info("No WRs clear the minimum target share threshold right now.")
         return
+    display = safe_wrs[
+        ["player_name", "editorial_team_abbr", "target_share", "deep_target_share", "wr_floor_score"]
+    ].rename(columns={"editorial_team_abbr": "team"})
     st.dataframe(
-        safe_wrs[
-            ["player_name", "editorial_team_abbr", "target_share", "deep_target_share", "wr_floor_score"]
-        ].rename(columns={"editorial_team_abbr": "team"}),
+        _style_table(display, highlight_col="wr_floor_score"),
         use_container_width=True,
         hide_index=True,
     )
@@ -673,7 +745,7 @@ def render_breakout_radar(players_df: pd.DataFrame) -> None:
     ].rename(columns={"editorial_team_abbr": "team", "display_position": "pos"})
     display["breakout_signals"] = display["breakout_signals"].apply(lambda s: " | ".join(s) if s else "")
     display["caution_flags"] = display["caution_flags"].apply(lambda s: " | ".join(s) if s else "")
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(_style_table(display, highlight_col="breakout_score"), use_container_width=True, hide_index=True)
 
 
 def render_te_difference_makers(players_df: pd.DataFrame) -> None:
@@ -700,7 +772,7 @@ def render_te_difference_makers(players_df: pd.DataFrame) -> None:
         "ngs_separation": "separation (yds)", "team_pass_rate": "team pass rate",
     })
     display["te_signals"] = display["te_signals"].apply(lambda s: " | ".join(s) if s else "")
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(_style_table(display, highlight_col="score"), use_container_width=True, hide_index=True)
 
 
 def render_oline_rankings() -> None:
@@ -751,15 +823,16 @@ def render_oline_rankings() -> None:
         axis=1,
     )
 
+    table = display[[
+        "oline_rank", "team", "oline_score", "trend", "new_starters_count", "coaching_change",
+        "sack_rate", "qb_hit_rate", "avg_time_to_throw", "yards_per_carry", "stuff_rate", "continuity_share",
+    ]].rename(columns={
+        "oline_rank": "rank", "oline_score": "score", "new_starters_count": "new starters",
+        "sack_rate": "sack rate", "qb_hit_rate": "QB hit rate", "avg_time_to_throw": "QB time to throw (s)",
+        "yards_per_carry": "YPC", "stuff_rate": "stuff rate", "continuity_share": "lineup continuity",
+    })
     st.dataframe(
-        display[[
-            "oline_rank", "team", "oline_score", "trend", "new_starters_count", "coaching_change",
-            "sack_rate", "qb_hit_rate", "avg_time_to_throw", "yards_per_carry", "stuff_rate", "continuity_share",
-        ]].rename(columns={
-            "oline_rank": "rank", "oline_score": "score", "new_starters_count": "new starters",
-            "sack_rate": "sack rate", "qb_hit_rate": "QB hit rate", "avg_time_to_throw": "QB time to throw (s)",
-            "yards_per_carry": "YPC", "stuff_rate": "stuff rate", "continuity_share": "lineup continuity",
-        }),
+        _style_table(table, highlight_col="score"),
         use_container_width=True,
         hide_index=True,
     )
@@ -823,17 +896,18 @@ def render_team_change_report() -> None:
         st.info("No movers match the selected position filter.")
         return
 
+    display = filtered[
+        ["player_name", "position", "team_old", "team_new", "pass_rate_old", "pass_rate_new",
+         "oline_score_old", "oline_score_new", "wr_te_target_share_sum", "context_notes"]
+    ].rename(columns={
+        "player_name": "player", "team_old": "from", "team_new": "to",
+        "pass_rate_old": "pass rate (old)", "pass_rate_new": "pass rate (new)",
+        "oline_score_old": "O-line (old)", "oline_score_new": "O-line (new)",
+        "wr_te_target_share_sum": "new team WR/TE competition",
+        "context_notes": "context",
+    })
     st.dataframe(
-        filtered[
-            ["player_name", "position", "team_old", "team_new", "pass_rate_old", "pass_rate_new",
-             "oline_score_old", "oline_score_new", "wr_te_target_share_sum", "context_notes"]
-        ].rename(columns={
-            "player_name": "player", "team_old": "from", "team_new": "to",
-            "pass_rate_old": "pass rate (old)", "pass_rate_new": "pass rate (new)",
-            "oline_score_old": "O-line (old)", "oline_score_new": "O-line (new)",
-            "wr_te_target_share_sum": "new team WR/TE competition",
-            "context_notes": "context",
-        }),
+        _style_table(display, highlight_col="O-line (new)"),
         use_container_width=True,
         hide_index=True,
     )
