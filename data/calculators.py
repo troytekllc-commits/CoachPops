@@ -450,3 +450,92 @@ def find_breakout_signals(players_df: pd.DataFrame, min_score: float = 1.0) -> p
 
     candidates = df[df["breakout_score"] >= min_score]
     return candidates.sort_values("breakout_score", ascending=False).reset_index(drop=True)
+
+
+# --- TE Difference-Maker Finder ---------------------------------------------
+# Tight end is unusually top-heavy: a handful of "must-start" weekly options,
+# then a canyon, then touchdown-dependent streamers -- there's almost no
+# usable middle tier the way there is at RB/WR. The signals below are the
+# ones that predict a jump into that top tier *before* the box score shows
+# it: real target volume, a real red-zone role, actually running receiving
+# routes rather than mostly blocking (`te_snap_share` alone doesn't
+# distinguish these -- it's `te_snap_share` combined with `target_share`
+# that does), and a good, high-volume passing offense to work in.
+TE_SIGNAL_WEIGHTS: Dict[str, float] = {
+    "target_share": 0.30,
+    "red_zone_share": 0.20,
+    "te_snap_share": 0.15,
+    "team_pass_rate": 0.15,
+    "team_pass_epa": 0.10,
+    "opportunity_bonus": 0.10,  # injury_opportunity / new offensive coordinator, from Breakout Radar's fields
+}
+MIN_TE_GROUP_FOR_PERCENTILE = 3
+
+
+def find_te_difference_makers(players_df: pd.DataFrame, min_score: float = 0.0) -> pd.DataFrame:
+    """Rank TEs by how likely they are to become a top-tier weekly starter,
+    using the pre-box-score signals research shows actually predict it,
+    rather than raw fantasy points scored so far.
+
+    Requires the enrichment fields from `api/nfl_enrichment.py`
+    (`target_share`, `red_zone_share`, `te_snap_share`, `team_pass_rate`,
+    `team_pass_epa`, `injury_opportunity`, `team_new_offensive_coordinator`).
+    With too few TEs in the pool to compute a meaningful percentile
+    (fewer than `MIN_TE_GROUP_FOR_PERCENTILE`), returns an empty DataFrame
+    rather than a misleading rank of 1.
+
+    Args:
+        players_df: Player records, enriched via `api/nfl_enrichment.py`.
+        min_score: Minimum `te_score` (0-100) required to appear in results.
+
+    Returns:
+        DataFrame filtered to TEs clearing `min_score`, with a `te_score`
+        column and a `te_signals` (list[str]) column explaining why, sorted
+        descending.
+    """
+    tes = players_df[players_df["display_position"] == "TE"].copy()
+    if len(tes) < MIN_TE_GROUP_FOR_PERCENTILE:
+        return tes.iloc[0:0]
+
+    def pct(col: str, higher_is_better: bool = True) -> pd.Series:
+        # A missing value (common with real, partial Yahoo/nfl_data_py
+        # data -- e.g. a TE outside nflverse's yahoo_id crosswalk for one
+        # specific metric) is treated as *neutral* (0.5), not worst-case,
+        # so one missing input doesn't NaN out -- and zero -- a player's
+        # entire score.
+        ranked = tes[col].rank(pct=True)
+        ranked = ranked if higher_is_better else (1 - ranked)
+        return ranked.fillna(0.5)
+
+    opportunity_bonus = tes.apply(
+        lambda row: (1.0 if row.get("injury_opportunity") else 0.0)
+        + (1.0 if row.get("team_new_offensive_coordinator") else 0.0),
+        axis=1,
+    ).clip(upper=1.0)
+
+    tes["te_score"] = 100 * (
+        TE_SIGNAL_WEIGHTS["target_share"] * pct("target_share")
+        + TE_SIGNAL_WEIGHTS["red_zone_share"] * pct("red_zone_share")
+        + TE_SIGNAL_WEIGHTS["te_snap_share"] * pct("te_snap_share")
+        + TE_SIGNAL_WEIGHTS["team_pass_rate"] * pct("team_pass_rate")
+        + TE_SIGNAL_WEIGHTS["team_pass_epa"] * pct("team_pass_epa")
+        + TE_SIGNAL_WEIGHTS["opportunity_bonus"] * opportunity_bonus
+    )
+
+    def signals(row: pd.Series) -> list:
+        found = []
+        if pd.notna(row.get("target_share")) and row["target_share"] >= tes["target_share"].quantile(0.75):
+            found.append(f"Top-quartile target share ({row['target_share']:.0%})")
+        if pd.notna(row.get("red_zone_share")) and row["red_zone_share"] >= tes["red_zone_share"].quantile(0.75):
+            found.append(f"Top-quartile red-zone share ({row['red_zone_share']:.0%})")
+        if pd.notna(row.get("te_snap_share")) and row["te_snap_share"] >= 0.7:
+            found.append(f"True receiving-role snap share ({row['te_snap_share']:.0%})")
+        if row.get("injury_opportunity"):
+            found.append(f"Opportunity: {row.get('injury_opportunity_ahead_player')} is {row.get('injury_opportunity_ahead_status')}")
+        if row.get("team_new_offensive_coordinator"):
+            found.append(f"New offensive coordinator: {row.get('team_offensive_coordinator_name')}")
+        return found
+
+    tes["te_signals"] = tes.apply(signals, axis=1)
+    candidates = tes[tes["te_score"] >= min_score]
+    return candidates.sort_values("te_score", ascending=False).reset_index(drop=True)

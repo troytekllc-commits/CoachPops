@@ -64,9 +64,37 @@ PROJECTION_WEEKS = range(1, 18)
 def default_nfl_season() -> int:
     """Best-guess current NFL season year. The season named "2026" runs
     from around September 2026 through the Super Bowl in February 2027,
-    so January/February still belong to the *previous* year's season."""
+    so January/February still belong to the *previous* year's season.
+
+    This is the right default for ROSTER/draft-capital context (which
+    team a player is on, is_rookie, draft_capital) -- those exist the
+    moment a season's rosters/draft class are set, months before a single
+    game is played. It is the WRONG default for anything that needs
+    actual played games (target_share, red_zone_share, team_pass_rate,
+    O-Line rankings, snap counts, ...) -- use `default_stats_season()`
+    for those instead. Verified directly: in August 2026,
+    `import_seasonal_rosters([2026])` returns real data, but
+    `import_pbp_data([2026])` 404s -- there's nothing to aggregate yet.
+    """
     today = datetime.date.today()
     return today.year - 1 if today.month <= 2 else today.year
+
+
+def default_stats_season() -> int:
+    """Best-guess season year for which nfl_data_py actually has
+    play-by-play/weekly/snap-count data -- i.e. games have actually been
+    played. The NFL regular season always starts after Labor Day (early
+    September), so before September 1st of `default_nfl_season()`'s
+    year, fall back to the prior (fully-played) season instead of the
+    upcoming one. Use this for O-Line rankings, team change context, TE
+    snap share, target share, and any other performance-based function --
+    `default_nfl_season()` for roster/draft-capital context instead.
+    """
+    today = datetime.date.today()
+    season = default_nfl_season()
+    if today.year == season and today.month < 9:
+        return season - 1
+    return season
 
 
 @lru_cache(maxsize=8)
@@ -110,6 +138,53 @@ def load_pbp(season: int) -> pd.DataFrame:
         ],
         downcast=True,
     )
+
+
+def compute_team_offense_context(season: int) -> pd.DataFrame:
+    """Per-team pass rate (share of rush+pass plays that were passes) and
+    passing efficiency (EPA/play on pass attempts) -- a proxy for offense
+    pace/aggressiveness and QB+scheme quality. Lives here (rather than in
+    api/team_change_analytics.py, its main consumer) so it can also feed
+    per-player enrichment (team_pass_rate/team_pass_epa, used by the TE
+    Difference-Maker calculator) without a circular import."""
+    pbp = load_pbp(season)
+    plays = pbp[(pbp["pass_attempt"] == 1) | (pbp["rush_attempt"] == 1)].copy()
+    plays["team"] = plays["posteam"].apply(_normalize_team_abbr)
+
+    pass_rate = plays.groupby("team")["pass_attempt"].mean().rename("pass_rate")
+    pass_epa = plays[plays["pass_attempt"] == 1].groupby("team")["epa"].mean().rename("pass_epa")
+    return pd.concat([pass_rate, pass_epa], axis=1).reset_index()
+
+
+@lru_cache(maxsize=8)
+def load_snap_counts(season: int) -> pd.DataFrame:
+    """Shared snap-count loader for api/oline_analytics.py's continuity
+    metric and this module's TE snap-share lookup."""
+    import nfl_data_py as nfl
+
+    return nfl.import_snap_counts([season])
+
+
+def build_te_snap_share_lookup(season: int) -> Dict[str, float]:
+    """Each TE's average offensive snap share this season -- the
+    receiving-role-vs-blocking-role signal the TE Difference-Maker
+    calculator needs. Keyed by `gsis_id`, joined via `import_seasonal_rosters()`'s
+    `pfr_id` column (the same format as `import_snap_counts()`'s
+    `pfr_player_id` -- verified directly, e.g. Travis Kelce is `KelcTr00`
+    in both)."""
+    snaps = load_snap_counts(season)
+    te_snaps = snaps[(snaps["position"] == "TE") & (snaps["game_type"] == "REG")]
+    avg_share_by_pfr_id = te_snaps.groupby("pfr_player_id")["offense_pct"].mean()
+
+    rosters = load_seasonal_rosters(season)
+    te_rosters = rosters[(rosters["position"] == "TE") & rosters["pfr_id"].notna()]
+
+    lookup: Dict[str, float] = {}
+    for _, row in te_rosters.iterrows():
+        share = avg_share_by_pfr_id.get(row["pfr_id"])
+        if share is not None:
+            lookup[row["player_id"]] = share
+    return lookup
 
 
 @lru_cache(maxsize=8)
@@ -438,6 +513,8 @@ def build_enrichment_lookup(
     injury_opportunity_by_gsis = build_injury_opportunity_lookup(season, injury_week)
     coaching_change_by_team = build_coaching_change_lookup(season, coordinator_csv_path)
     qb_year2_flags_by_gsis = build_qb_year2_regression_flags(season)
+    te_snap_share_by_gsis = build_te_snap_share_lookup(season)
+    offense_context_by_team = compute_team_offense_context(season).set_index("team")
 
     draft_by_gsis = {
         row["gsis_id"]: {"round": int(row["round"]), "pick": int(row["pick"])}
@@ -454,6 +531,7 @@ def build_enrichment_lookup(
         injury_opp = injury_opportunity_by_gsis.get(gsis_id, {})
         coaching_change = coaching_change_by_team.get(team, {})
         qb_year2 = qb_year2_flags_by_gsis.get(gsis_id, {})
+        offense_context = offense_context_by_team.loc[team] if team in offense_context_by_team.index else None
 
         lookup[yahoo_id] = {
             "is_rookie": bool(row.get("rookie_year") == season),
@@ -461,6 +539,9 @@ def build_enrichment_lookup(
             "target_share": target_share_by_gsis.get(gsis_id),
             "deep_target_share": deep_share_by_gsis.get(gsis_id),
             "red_zone_share": red_zone_share_by_gsis.get(gsis_id),
+            "te_snap_share": te_snap_share_by_gsis.get(gsis_id),
+            "team_pass_rate": offense_context["pass_rate"] if offense_context is not None else None,
+            "team_pass_epa": offense_context["pass_epa"] if offense_context is not None else None,
             "projected_points_by_week": estimate_projected_points_by_week(ppg_by_gsis.get(gsis_id)),
             "injury_opportunity": injury_opp.get("injury_opportunity", False),
             "injury_opportunity_ahead_player": injury_opp.get("injury_opportunity_ahead_player"),
@@ -480,6 +561,7 @@ def build_enrichment_lookup(
 # can't silently drift apart.
 ENRICHMENT_FIELDS = (
     "is_rookie", "draft_capital", "target_share", "deep_target_share", "red_zone_share",
+    "te_snap_share", "team_pass_rate", "team_pass_epa",
     "projected_points_by_week", "injury_opportunity", "injury_opportunity_ahead_player",
     "injury_opportunity_ahead_status", "team_new_head_coach", "team_head_coach_name",
     "team_new_offensive_coordinator", "team_offensive_coordinator_name",

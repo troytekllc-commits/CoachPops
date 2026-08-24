@@ -26,10 +26,13 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
     baseline. See its module docstring for coverage (~half of rostered
     players) and every accuracy caveat.
 - `data/` — analytics engines and local data/caches
-  - `calculators.py` — six pandas-based scoring engines tuned for this
+  - `calculators.py` — seven pandas-based scoring engines tuned for this
     league's 3-WR / 6-bench / 2-IR format: `calculate_custom_value()`,
     `apply_rookie_bump()`, `calculate_qb_floor()`, `find_ir_stashes()`,
-    `evaluate_wr_scarcity()`, `find_breakout_signals()`.
+    `evaluate_wr_scarcity()`, `find_breakout_signals()`,
+    `find_te_difference_makers()` (target share, red-zone share, TE snap
+    share/receiving-role split, and team pass volume/efficiency — the
+    pre-box-score signals that predict a jump into TE's thin top tier).
   - `coaching_changes.csv.example` — template for the manually maintained
     OC/DC-hire data `nfl_enrichment.py` reads (copy to `coaching_changes.csv`
     and fill in from public reporting each offseason — no API exists for
@@ -47,11 +50,24 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
   no single "value went up/down" score, since that's genuinely
   position-dependent; see its module docstring.
 - `ui/` — Streamlit dashboard
-  - `dashboard.py` — 8-tab dashboard (League Optimizer, Rookie Radar,
+  - `dashboard.py` — 9-tab dashboard (League Optimizer, Rookie Radar,
     QB Konami Code, IR Stash Targets, WR3 Floor Finder, Breakout Radar,
-    **O-Line Power Rankings**, **Team Change Impact**), with a sidebar
-    toggle between mock data and live Yahoo data. The last two tabs work
-    with zero Yahoo access — pure `nfl_data_py`.
+    **TE Difference-Makers**, **O-Line Power Rankings**, **Team Change
+    Impact**), with a sidebar toggle between mock data and live Yahoo
+    data. The last two tabs work with zero Yahoo access — pure
+    `nfl_data_py`.
+
+### A note on season defaults
+
+Two different "current season" concepts matter here. `default_nfl_season()`
+(the roster/draft-capital season — e.g. `2026` once that season's rosters
+and draft class exist, months before a game is played) and
+`default_stats_season()` (the last season with actual played games — e.g.
+still `2025` in August, before Week 1). The O-Line Power Rankings and Team
+Change Impact tabs, and the live-data sidebar's enrichment season, all use
+`default_stats_season()` — verified directly: `import_seasonal_rosters([2026])`
+returns real data in August 2026, but `import_pbp_data([2026])` 404s since
+no games have been played yet.
 - `scripts/yahoo_login.py` — one-off CLI script that performs the initial
   Yahoo OAuth browser handshake (run this before switching the dashboard to
   live data).

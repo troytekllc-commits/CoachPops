@@ -42,7 +42,7 @@ import pandas as pd
 from api.nfl_enrichment import (
     _normalize_team_abbr,
     build_coaching_change_lookup,
-    load_pbp,
+    compute_team_offense_context,
     load_seasonal_rosters,
     load_weekly_data,
 )
@@ -50,21 +50,6 @@ from api.oline_analytics import build_oline_power_rankings
 
 FANTASY_RELEVANT_POSITIONS = ("QB", "RB", "WR", "TE")
 TARGET_COMPETITION_POSITIONS = ("WR", "TE")
-
-
-def compute_team_offense_context(season: int) -> pd.DataFrame:
-    """Per-team pass rate (share of rush+pass plays that were passes) and
-    passing efficiency (EPA/play on pass attempts) -- a proxy for offense
-    pace/aggressiveness and QB+scheme quality."""
-    pbp = load_pbp(season)
-    plays = pbp[(pbp["pass_attempt"] == 1) | (pbp["rush_attempt"] == 1)].copy()
-    plays["team"] = plays["posteam"].apply(_normalize_team_abbr)
-
-    pass_rate = plays.groupby("team")["pass_attempt"].mean().rename("pass_rate")
-    pass_epa = (
-        plays[plays["pass_attempt"] == 1].groupby("team")["epa"].mean().rename("pass_epa")
-    )
-    return pd.concat([pass_rate, pass_epa], axis=1).reset_index()
 
 
 def compute_target_competition(season: int) -> pd.DataFrame:

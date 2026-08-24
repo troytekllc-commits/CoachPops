@@ -37,6 +37,7 @@ from data.calculators import (  # noqa: E402
     evaluate_wr_scarcity,
     find_breakout_signals,
     find_ir_stashes,
+    find_te_difference_makers,
 )
 
 
@@ -343,6 +344,9 @@ def build_mock_players_df() -> pd.DataFrame:
     # so every signal has at least one mock player that lights it up.
     for player in players:
         player.setdefault("red_zone_share", None)
+        player.setdefault("te_snap_share", None)
+        player.setdefault("team_pass_rate", None)
+        player.setdefault("team_pass_epa", None)
         player.setdefault("injury_opportunity", False)
         player.setdefault("injury_opportunity_ahead_player", None)
         player.setdefault("injury_opportunity_ahead_status", None)
@@ -382,6 +386,16 @@ def build_mock_players_df() -> pd.DataFrame:
     by_id["100002"]["qb_year2_regression_caution"] = True
     by_id["100002"]["qb_year1_ppg"] = 19.4
 
+    # TE Difference-Maker Finder scenarios: give the existing two TEs a
+    # snap-share/team-context profile, and add a third so the >=3-TE
+    # percentile threshold has something to rank against.
+    by_id["100014"]["te_snap_share"] = 0.62  # Solid Sam: real but modest receiving role
+    by_id["100014"]["team_pass_rate"] = 0.56
+    by_id["100014"]["team_pass_epa"] = 0.05
+    by_id["100012"]["te_snap_share"] = 0.30  # PUP Pete: mostly a blocking TE, on top of being hurt
+    by_id["100012"]["team_pass_rate"] = 0.52
+    by_id["100012"]["team_pass_epa"] = -0.05
+
     # Injury-opened opportunity: a backup WR behind the already-injured Wounded Wes.
     players.append({
         "player_key": "449.p.100015",
@@ -414,6 +428,45 @@ def build_mock_players_df() -> pd.DataFrame:
             "two_point_conversions": 0, "fumbles_lost": 0,
         },
         "projected_points_by_week": _weekly_projection(3.0, 6.0),
+    })
+
+    # A clear TE Difference-Maker Finder example: real target share, a real
+    # red-zone role, a true receiving-role snap share, and a pass-heavy,
+    # efficient offense to work in.
+    players.append({
+        "player_key": "449.p.100016",
+        "player_id": "100016",
+        "name": {"full": "Rising Ryder", "first": "Rising", "last": "Ryder"},
+        "editorial_team_abbr": "DET",
+        "display_position": "TE",
+        "eligible_positions": [{"position": "TE"}],
+        "status": "",
+        "is_rookie": False,
+        "draft_capital": None,
+        "target_share": 0.21,
+        "deep_target_share": 0.10,
+        "red_zone_share": 0.15,
+        "te_snap_share": 0.83,
+        "team_pass_rate": 0.61,
+        "team_pass_epa": 0.18,
+        "injury_opportunity": False,
+        "injury_opportunity_ahead_player": None,
+        "injury_opportunity_ahead_status": None,
+        "team_new_head_coach": False,
+        "team_head_coach_name": None,
+        "team_new_offensive_coordinator": False,
+        "team_offensive_coordinator_name": None,
+        "qb_year2_regression_caution": False,
+        "qb_year1_ppg": None,
+        "percent_owned": 34.0,
+        "percent_owned_delta": 4.0,
+        "stats": {
+            "passing_yards": 0, "passing_touchdowns": 0, "interceptions": 0,
+            "rushing_yards": 0, "rushing_touchdowns": 0, "receptions": 48,
+            "receiving_yards": 560, "receiving_touchdowns": 5,
+            "two_point_conversions": 0, "fumbles_lost": 0,
+        },
+        "projected_points_by_week": _weekly_projection(9.0, 12.0),
     })
 
     return pd.DataFrame(players)
@@ -577,11 +630,37 @@ def render_breakout_radar(players_df: pd.DataFrame) -> None:
     st.dataframe(display, use_container_width=True, hide_index=True)
 
 
+def render_te_difference_makers(players_df: pd.DataFrame) -> None:
+    st.subheader("TE Difference-Maker Finder")
+    st.caption(
+        "TE is unusually top-heavy -- a handful of must-start options, then a canyon, then "
+        "touchdown-dependent streamers. Ranks TEs by the signals that predict a jump into that "
+        "top tier *before* the box score shows it: real target share, a real red-zone role, "
+        "actually running receiving routes (not just blocking), and a good, high-volume passing "
+        "offense to work in -- plus the same opportunity signals as Breakout Radar."
+    )
+    ranked = _with_display_name(find_te_difference_makers(players_df))
+    if ranked.empty:
+        st.info("Not enough TEs in the current pool to rank (need at least 3).")
+        return
+
+    display = ranked[
+        ["player_name", "editorial_team_abbr", "te_score", "target_share", "red_zone_share",
+         "te_snap_share", "team_pass_rate", "te_signals"]
+    ].rename(columns={
+        "editorial_team_abbr": "team", "te_score": "score", "target_share": "target share",
+        "red_zone_share": "red-zone share", "te_snap_share": "snap share (receiving role)",
+        "team_pass_rate": "team pass rate",
+    })
+    display["te_signals"] = display["te_signals"].apply(lambda s: " | ".join(s) if s else "")
+    st.dataframe(display, use_container_width=True, hide_index=True)
+
+
 def render_oline_rankings() -> None:
     """Team-level O-Line Power Rankings. Unlike every other tab, this one
     needs no Yahoo data at all -- pure nfl_data_py -- so it works the same
     whether the sidebar is set to mock or live Yahoo data."""
-    from api.nfl_enrichment import default_nfl_season
+    from api.nfl_enrichment import default_stats_season
     from api.oline_analytics import build_oline_rankings_with_trend
 
     st.subheader("O-Line Power Rankings")
@@ -596,7 +675,7 @@ def render_oline_rankings() -> None:
     )
 
     season = st.number_input(
-        "Season", min_value=2015, max_value=2035, value=default_nfl_season(), step=1, key="oline_season"
+        "Season", min_value=2015, max_value=2035, value=default_stats_season(), step=1, key="oline_season"
     )
 
     @st.cache_data(ttl=3600, show_spinner="Crunching play-by-play, snap counts, and draft data...")
@@ -653,7 +732,7 @@ def render_team_change_report() -> None:
     """Skill-position players who changed teams, with old-vs-new team
     context. Like O-Line Power Rankings, this is pure nfl_data_py -- no
     Yahoo data needed."""
-    from api.nfl_enrichment import default_nfl_season
+    from api.nfl_enrichment import default_stats_season
     from api.team_change_analytics import build_team_change_report
 
     st.subheader("Team Change Impact")
@@ -667,7 +746,7 @@ def render_team_change_report() -> None:
     )
 
     season = st.number_input(
-        "Season", min_value=2016, max_value=2035, value=default_nfl_season(), step=1, key="team_change_season"
+        "Season", min_value=2016, max_value=2035, value=default_stats_season(), step=1, key="team_change_season"
     )
     position_filter = st.multiselect(
         "Position", options=["QB", "RB", "WR", "TE"], default=["QB", "RB", "WR", "TE"], key="team_change_position"
@@ -727,7 +806,7 @@ def load_live_players_df(count_limit: int, enrich: bool, season: int) -> pd.Data
 
 
 def main() -> None:
-    from api.nfl_enrichment import default_nfl_season
+    from api.nfl_enrichment import default_stats_season
 
     st.set_page_config(page_title="CoachPops Fantasy Manager", page_icon="🏈", layout="wide")
     st.title("🏈 CoachPops Fantasy Football Manager")
@@ -756,7 +835,7 @@ def main() -> None:
                  "roughly half of rostered players. See api/nfl_enrichment.py.",
         )
         nfl_season = st.number_input(
-            "NFL season", min_value=2015, max_value=2035, value=default_nfl_season(), step=1,
+            "NFL season", min_value=2015, max_value=2035, value=default_stats_season(), step=1,
             disabled=data_source != "Live Yahoo data" or not enrich_with_nfl_data,
         )
 
@@ -796,7 +875,7 @@ def main() -> None:
         )
         players_df = build_mock_players_df()
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
         [
             "League Optimizer",
             "Rookie Radar",
@@ -804,6 +883,7 @@ def main() -> None:
             "IR Stash Targets",
             "WR3 Floor Finder",
             "Breakout Radar",
+            "TE Difference-Makers",
             "O-Line Power Rankings",
             "Team Change Impact",
         ]
@@ -821,8 +901,10 @@ def main() -> None:
     with tab6:
         render_breakout_radar(players_df)
     with tab7:
-        render_oline_rankings()
+        render_te_difference_makers(players_df)
     with tab8:
+        render_oline_rankings()
+    with tab9:
         render_team_change_report()
 
 
