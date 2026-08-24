@@ -1,0 +1,7 @@
+# CoachPops blue theme. See https://docs.streamlit.io/library/advanced-features/theming
+[theme]
+primaryColor = "#2563EB"          # buttons, active tab underline, slider/checkbox accents
+backgroundColor = "#FFFFFF"       # main content area -- kept white so data tables stay readable
+secondaryBackgroundColor = "#EFF6FF"  # sidebar + widget backgrounds -- light blue tint
+textColor = "#0F172A"             # near-black slate for high contrast against the blue accents
+font = "sans serif"
