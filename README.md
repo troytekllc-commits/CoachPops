@@ -219,6 +219,44 @@ gap as of this writing (`import_weekly_data([2025])` 404s; 2024 and
 earlier work). The fallback shows a clear warning rather than silently
 serving stale-looking data or crashing the tab.
 
+#### Yahoo ADP reference (optional, manual)
+
+If `data/yahoo_draft_reference.csv` exists, Draft Board also shows this
+league's real Yahoo Fantasy Plus ADP (average draft position), tier, and
+a **"value vs. Yahoo ADP"** column (this board's own position rank minus
+Yahoo's — positive means this board likes the player more than Yahoo's
+drafters do; negative means Yahoo's ADP has them going earlier than this
+board would).
+
+This file has no API behind it — it's a one-time, manually transcribed
+snapshot of a real Yahoo Fantasy Plus premium "Cheat Sheet" PDF export
+for this exact league (columns: `position,tier,overall_rank,
+first_initial,last_name,team,adp`). Unlike every other join in this
+project, there's no stable ID to cross-reference a rendered PDF against,
+so `attach_yahoo_adp()` (`api/nfl_enrichment.py`) name-matches instead —
+a deliberate, documented exception to this project's usual "never guess
+by name" rule, made only because there's no alternative. It matches on
+`(position, first initial, normalized last name, team)` first, falling
+back to `(position, first initial, last name)` alone when that's
+unambiguous — this fallback matters because the reference file's team
+reflects *today's* roster while the stats pool's team can be a season or
+more stale, and real trades happen in between.
+
+**To refresh**: export a fresh Cheat Sheet PDF from your Yahoo Fantasy
+Plus account, re-transcribe it into the same CSV format, and replace
+`data/yahoo_draft_reference.csv`. Just ask Claude to do this and hand it
+the new PDF — no code changes needed. Expect real, harmless misses for
+players who weren't on any roster in whatever season the stats pool
+covers (this year's incoming rookie class, by definition, since the pool
+is last *completed* season's stats).
+
+Also worth knowing: this same PDF is what confirmed this league's real
+roster construction (`DEFAULT_ROSTER_REQUIREMENTS` in
+`data/calculators.py`) — 1 QB / 2 RB / 3 WR / 1 TE / 1 FLEX / 1 K / 1 DEF
+/ 6 BN / 2 IR, with the FLEX slot being **"W/R" only** (TE is not
+FLEX-eligible in this league), which Free Agent Suggestions/Trade
+Finder's need calculations already assume.
+
 ### A note on season defaults
 
 Two different "current season" concepts matter here. `default_nfl_season()`

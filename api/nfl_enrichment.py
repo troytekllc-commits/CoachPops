@@ -48,6 +48,7 @@ future enhancement rather than shipped half-reliable.
 from __future__ import annotations
 
 import datetime
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional
@@ -867,7 +868,15 @@ def build_draft_board_pool(season: int, positions: tuple = DRAFT_BOARD_POSITIONS
             "player_id": gsis_id,
             "name": {
                 "full": row.get("player_name") or gsis_id,
-                "first": row.get("first_name") or "",
+                # Prefer the public "football name" over the legal first
+                # name -- nflverse's `first_name` is the player's legal
+                # first name (e.g. "Rayne" for Dak Prescott, "DeKaylin" for
+                # DK Metcalf), which doesn't match how anyone -- including
+                # Yahoo's own cheat sheet -- actually refers to them. This
+                # matters beyond display: `attach_yahoo_adp()` below keys
+                # on this initial, and a legal-name initial silently broke
+                # that match for every player with a real "football name".
+                "first": row.get("football_name") or row.get("first_name") or "",
                 "last": row.get("last_name") or "",
             },
             "editorial_team_abbr": _normalize_team_abbr(row.get("team")),
@@ -884,3 +893,133 @@ def build_draft_board_pool(season: int, positions: tuple = DRAFT_BOARD_POSITIONS
     if df.empty:
         return df
     return enrich_players_dataframe(df, season, key_by="player_id")
+
+
+# --- Yahoo premium draft reference (manual, name-matched -- see caveat) -
+# data/yahoo_draft_reference.csv: manually transcribed from a real Yahoo
+# Fantasy Plus premium "Cheat Sheet" PDF export for this exact league (the
+# league owner's own account) -- Yahoo's real ADP (average draft position)
+# and tier groupings, which this project otherwise has no source for (the
+# "consensus baseline" gap this project's README flags FantasyPros/paid
+# services as one way to fill -- this is a free, real, one-time snapshot
+# of the same idea instead). Unlike every other join in this project, this
+# has NO stable ID to cross-reference (a rendered PDF export, not an API)
+# -- so this is name-matched, a real, documented exception to this
+# project's usual "never guess by name" rule, made only because there's
+# no alternative and the match is verified, not blind.
+DEFAULT_YAHOO_DRAFT_REFERENCE_CSV = Path(__file__).resolve().parent.parent / "data" / "yahoo_draft_reference.csv"
+
+
+def _normalize_last_name_for_match(last_name: str) -> str:
+    """Lowercase, strip periods/hyphens/apostrophes, and strip a trailing
+    Jr/Sr/II/III/IV suffix -- the reference CSV's PDF-extracted text glues
+    these onto the last name with no space (e.g. "PittsSr.", "WalkerIII"),
+    and nflverse's own `last_name` field doesn't consistently include them
+    either, so both sides are normalized the same way before comparing."""
+    name = last_name.lower()
+    name = re.sub(r"[.\-'’]", "", name)
+    name = re.sub(r"(jr|sr|iii|ii|iv)$", "", name)
+    return name.strip()
+
+
+def build_yahoo_adp_lookup(csv_path: Optional[Path] = None) -> Optional[Dict[str, dict]]:
+    """Two lookup dicts built from ``data/yahoo_draft_reference.csv``,
+    returned as ``{"exact": ..., "by_name_position": ...}`` -- or ``None``
+    (never raises) if that file doesn't exist. This is an optional,
+    refresh-when-you-feel-like-it signal (re-export a fresh cheat sheet PDF
+    and re-transcribe when your league's ADP has moved), not a live feed.
+
+    ``"exact"`` keys on ``(position, first_initial, normalized_last_name,
+    team)`` -- the strict, no-ambiguity match.
+
+    ``"by_name_position"`` keys on ``(position, first_initial,
+    normalized_last_name)`` alone, mapped to a *list* of that name's
+    entries. This exists because the reference CSV's team column reflects
+    the team a player is on *right now* (a live, current cheat sheet),
+    while the rest of the draft pool's team comes from a completed-season
+    roster snapshot that can be a year or more stale -- real trades and
+    free-agency moves in between (e.g. a WR traded mid-season) mean the two
+    sides' team codes can legitimately disagree for the same real player.
+    When a name+position has exactly one candidate here, that's a safe
+    match despite the team mismatch; `attach_yahoo_adp()` falls back to it
+    only when the strict team-matched lookup misses.
+    """
+    path = csv_path or DEFAULT_YAHOO_DRAFT_REFERENCE_CSV
+    if not path.is_file():
+        return None
+
+    df = pd.read_csv(path)
+    exact: Dict[tuple, dict] = {}
+    by_name_position: Dict[tuple, list] = {}
+    for _, row in df.iterrows():
+        position = str(row["position"]).upper()
+        first_initial = str(row["first_initial"]).upper()
+        last_key = _normalize_last_name_for_match(str(row["last_name"]))
+        team_key = _normalize_team_abbr(row["team"])
+        payload = {
+            "yahoo_adp": float(row["adp"]) if pd.notna(row.get("adp")) else None,
+            "yahoo_tier": int(row["tier"]) if pd.notna(row.get("tier")) else None,
+            "yahoo_position_rank": int(row["overall_rank"]) if pd.notna(row.get("overall_rank")) else None,
+        }
+        exact[(position, first_initial, last_key, team_key)] = payload
+        by_name_position.setdefault((position, first_initial, last_key), []).append(payload)
+
+    return {"exact": exact, "by_name_position": by_name_position}
+
+
+def attach_yahoo_adp(players_df: pd.DataFrame, csv_path: Optional[Path] = None) -> pd.DataFrame:
+    """Joins ``data/yahoo_draft_reference.csv``'s real Yahoo ADP/tier data
+    onto ``players_df`` by (position, first initial, normalized last name,
+    team) -- falling back to (position, first initial, last name) alone
+    when that name+position is unambiguous (see `build_yahoo_adp_lookup`'s
+    docstring on why team alone can't always be trusted). NAME-matched,
+    not an ID crosswalk (see module-level comment above for why). A real,
+    known limitation: this can silently miss a real match on a name
+    variant it doesn't normalize away, or (rarely) collide two different
+    players sharing an initial + last name + position. Treat the added
+    columns as directionally useful, not a guaranteed-correct join -- and
+    expect real, unavoidable misses for rookies who weren't on any roster
+    in whatever season the rest of the pool's stats come from (this
+    reference is for the *upcoming* draft; a completed-season stat pool
+    inherently can't contain next year's incoming rookie class).
+
+    Adds ``yahoo_adp`` (float, lower = drafted earlier), ``yahoo_tier``
+    (int), and ``yahoo_position_rank`` (int, rank within position) --
+    all ``None`` where no match was found.
+    """
+    lookup = build_yahoo_adp_lookup(csv_path)
+    df = players_df.copy()
+    if not lookup:
+        df["yahoo_adp"] = None
+        df["yahoo_tier"] = None
+        df["yahoo_position_rank"] = None
+        return df
+
+    exact = lookup["exact"]
+    by_name_position = lookup["by_name_position"]
+
+    def _match(row: pd.Series) -> dict:
+        name = row.get("name")
+        first = name.get("first") if isinstance(name, dict) else None
+        last = name.get("last") if isinstance(name, dict) else None
+        if not first or not last:
+            return {}
+        position = str(row.get("display_position") or "").upper()
+        first_initial = first[0].upper()
+        last_key = _normalize_last_name_for_match(last)
+        team_key = row.get("editorial_team_abbr")
+
+        hit = exact.get((position, first_initial, last_key, team_key))
+        if hit is not None:
+            return hit
+
+        candidates = by_name_position.get((position, first_initial, last_key))
+        if candidates and len(candidates) == 1:
+            return candidates[0]
+        return {}
+
+    matched = df.apply(_match, axis=1)
+    df["yahoo_adp"] = matched.apply(lambda m: m.get("yahoo_adp"))
+    df["yahoo_tier"] = matched.apply(lambda m: m.get("yahoo_tier"))
+    df["yahoo_position_rank"] = matched.apply(lambda m: m.get("yahoo_position_rank"))
+    return df

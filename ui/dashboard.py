@@ -1345,7 +1345,13 @@ def render_draft_board() -> None:
     synthetic projection for the upcoming season). Built with ZERO Yahoo
     dependency, unlike every other player-level tab -- this is pure
     `nfl_data_py`, same as O-Line Power Rankings/Team Change Impact."""
-    from api.nfl_enrichment import DRAFT_BOARD_POSITIONS, build_draft_board_pool, default_stats_season
+    from api.nfl_enrichment import (
+        DEFAULT_YAHOO_DRAFT_REFERENCE_CSV,
+        DRAFT_BOARD_POSITIONS,
+        attach_yahoo_adp,
+        build_draft_board_pool,
+        default_stats_season,
+    )
 
     st.subheader("Draft Board")
     st.caption(
@@ -1358,6 +1364,14 @@ def render_draft_board() -> None:
         "ranking players, not a finished cheat sheet that already knows about every offseason "
         "move. Needs zero Yahoo access, unlike every other player-level tab."
     )
+    has_yahoo_adp_reference = DEFAULT_YAHOO_DRAFT_REFERENCE_CSV.is_file()
+    if has_yahoo_adp_reference:
+        st.caption(
+            "Also shown: this league's real Yahoo Fantasy Plus ADP/tier (from your own premium "
+            "cheat sheet export) alongside where this board ranks each player, so you can spot "
+            "where the two disagree. Name-matched, not an ID join -- see README for how to refresh "
+            "it. Expect real, harmless misses for this year's rookies (not in last season's stats)."
+        )
 
     season = st.number_input(
         "Season (last completed season's stats)", min_value=2015, max_value=2035,
@@ -1390,15 +1404,29 @@ def render_draft_board() -> None:
             return
 
     board = _with_display_name(board)
+    if has_yahoo_adp_reference:
+        board = attach_yahoo_adp(board)
+        board["our_position_rank"] = board.groupby("display_position")["priority_score"].rank(
+            ascending=False, method="min"
+        )
+        # Positive = we rank this player better than Yahoo's own drafters do
+        # (a possible value pick); negative = Yahoo's ADP has them going
+        # earlier than this board would -- a possible overdraft/avoid.
+        board["value_vs_yahoo_adp"] = board["yahoo_position_rank"] - board["our_position_rank"]
+
     filtered = board[board["display_position"].isin(position_filter)]
     if filtered.empty:
         st.info("No players match the selected position filter.")
         return
 
-    display = filtered[
-        ["player_name", "editorial_team_abbr", "display_position", "priority_score",
-         "priority_signals", "priority_cautions"]
-    ].rename(columns={"editorial_team_abbr": "team", "display_position": "pos"})
+    columns = ["player_name", "editorial_team_abbr", "display_position", "priority_score"]
+    rename = {"editorial_team_abbr": "team", "display_position": "pos"}
+    if has_yahoo_adp_reference:
+        columns += ["yahoo_adp", "yahoo_tier", "value_vs_yahoo_adp"]
+        rename["value_vs_yahoo_adp"] = "value vs. Yahoo ADP"
+    columns += ["priority_signals", "priority_cautions"]
+
+    display = filtered[columns].rename(columns=rename)
     display["priority_signals"] = display["priority_signals"].apply(lambda s: " | ".join(s) if s else "")
     display["priority_cautions"] = display["priority_cautions"].apply(lambda s: " | ".join(s) if s else "")
     st.dataframe(_style_table(display, highlight_col="priority_score"), use_container_width=True, hide_index=True)

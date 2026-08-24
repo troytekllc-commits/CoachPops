@@ -102,16 +102,18 @@ DEFAULT_SCORING_SETTINGS: Dict[str, float] = {
     "fumbles_lost": -2,
 }
 
-# This league's real roster construction (confirmed by the league's owner):
-# standard Yahoo roster plus a third starting WR. K/DEF are intentionally
-# left out -- nothing in this project models them (no scoring weights, no
-# calculators), matching the app's existing skill-position-only scope.
+# This league's real roster construction -- confirmed directly against the
+# real "Roster positions" line on the league's own Yahoo cheat sheet PDF
+# ("1QB, 2RB, 3WR, 1TE, 1W/R, 1K, 1DEF, 6BN, 2IR"), not just recalled from
+# conversation. K/DEF are intentionally left out -- nothing in this project
+# models them (no scoring weights, no calculators), matching the app's
+# existing skill-position-only scope.
 DEFAULT_ROSTER_REQUIREMENTS: Dict[str, int] = {
     "QB": 1,
     "RB": 2,
     "WR": 3,
     "TE": 1,
-    "FLEX": 1,  # W/R/T -- see _position_demand() for how this gets split
+    "FLEX": 1,  # "W/R" per the real league settings -- NOT W/R/T; TE is not FLEX-eligible here
     "BENCH": 6,
     "IR": 2,
 }
@@ -858,12 +860,12 @@ TRADE_FAIRNESS_TOLERANCE = 0.35  # max relative priority_score gap (of the large
 
 def _position_demand(roster_requirements: Dict[str, int], num_teams: int = 1) -> Dict[str, float]:
     """How many starting slots exist at each position across `num_teams`
-    teams (`num_teams=1` for one team's own starting slots). FLEX (W/R/T)
-    demand is split evenly across RB and WR, not TE -- TE rarely starts in
-    FLEX in practice, and this app already treats TE as its own scarce,
-    difference-maker position (see TE Difference-Maker Finder). A
-    reasonable approximation, not an exact simulation of real lineup
-    decisions.
+    teams (`num_teams=1` for one team's own starting slots). FLEX demand
+    is split evenly across RB and WR, never TE -- confirmed exactly
+    against this league's real roster settings (the FLEX slot is
+    "1 W/R", not "1 W/R/T" -- TE genuinely isn't FLEX-eligible here), not
+    just a reasonable guess. If you adapt this for a league with a true
+    W/R/T flex, split TE in too.
     """
     flex = roster_requirements.get("FLEX", 0)
     return {
