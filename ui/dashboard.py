@@ -347,6 +347,14 @@ def build_mock_players_df() -> pd.DataFrame:
         player.setdefault("te_snap_share", None)
         player.setdefault("team_pass_rate", None)
         player.setdefault("team_pass_epa", None)
+        player.setdefault("game_script_spread", None)
+        player.setdefault("game_script_total", None)
+        player.setdefault("game_script_implied_team_total", None)
+        player.setdefault("ngs_separation", None)
+        player.setdefault("ngs_yac_above_expectation", None)
+        player.setdefault("ngs_time_to_throw", None)
+        player.setdefault("ngs_cpoe", None)
+        player.setdefault("sleeper_trending_adds", None)
         player.setdefault("injury_opportunity", False)
         player.setdefault("injury_opportunity_ahead_player", None)
         player.setdefault("injury_opportunity_ahead_status", None)
@@ -395,6 +403,20 @@ def build_mock_players_df() -> pd.DataFrame:
     by_id["100012"]["te_snap_share"] = 0.30  # PUP Pete: mostly a blocking TE, on top of being hurt
     by_id["100012"]["team_pass_rate"] = 0.52
     by_id["100012"]["team_pass_epa"] = -0.05
+    by_id["100014"]["ngs_separation"] = 2.4  # Solid Sam: modest separation
+    by_id["100012"]["ngs_separation"] = 1.6  # PUP Pete: below-average separation
+
+    # Favorable Vegas game script: Waiver Wendell's team is implied for a big day.
+    by_id["100013"]["game_script_spread"] = 6.5
+    by_id["100013"]["game_script_total"] = 48.0
+    by_id["100013"]["game_script_implied_team_total"] = 27.25
+
+    # Trending across Sleeper (market-wide signal, independent of this Yahoo league).
+    by_id["100009"]["sleeper_trending_adds"] = 8200  # Marginal Moe -- the market disagrees with his name
+
+    # QB Konami Code: give both mock QBs a CPOE reading.
+    by_id["100001"]["ngs_cpoe"] = 1.8   # Justin Scrambler: solid accuracy over expectation
+    by_id["100002"]["ngs_cpoe"] = -2.1  # Pocket Palmer: high volume, but below expectation
 
     # Injury-opened opportunity: a backup WR behind the already-injured Wounded Wes.
     players.append({
@@ -410,6 +432,17 @@ def build_mock_players_df() -> pd.DataFrame:
         "target_share": 0.08,
         "deep_target_share": 0.10,
         "red_zone_share": None,
+        "te_snap_share": None,
+        "team_pass_rate": None,
+        "team_pass_epa": None,
+        "game_script_spread": None,
+        "game_script_total": None,
+        "game_script_implied_team_total": None,
+        "ngs_separation": None,
+        "ngs_yac_above_expectation": None,
+        "ngs_time_to_throw": None,
+        "ngs_cpoe": None,
+        "sleeper_trending_adds": None,
         "injury_opportunity": True,
         "injury_opportunity_ahead_player": "Wounded Wes",
         "injury_opportunity_ahead_status": "O",
@@ -449,6 +482,14 @@ def build_mock_players_df() -> pd.DataFrame:
         "te_snap_share": 0.83,
         "team_pass_rate": 0.61,
         "team_pass_epa": 0.18,
+        "game_script_spread": None,
+        "game_script_total": None,
+        "game_script_implied_team_total": None,
+        "ngs_separation": 3.6,  # top-quartile route-running separation -- the difference-maker signal
+        "ngs_yac_above_expectation": None,
+        "ngs_time_to_throw": None,
+        "ngs_cpoe": None,
+        "sleeper_trending_adds": None,
         "injury_opportunity": False,
         "injury_opportunity_ahead_player": None,
         "injury_opportunity_ahead_status": None,
@@ -531,7 +572,8 @@ def render_qb_konami_code(players_df: pd.DataFrame) -> None:
     st.subheader("QB Konami Code: Passing Points vs. Rushing Floor")
     st.caption(
         "Dual-threat QBs sit up and to the right -- their weekly floor doesn't collapse "
-        "on a bad passing day the way a pure pocket passer's does."
+        "on a bad passing day the way a pure pocket passer's does. CPOE (completion % over "
+        "expectation, Next Gen Stats) is shown as a \"hidden skill\" signal independent of the box score."
     )
     qbs = _with_display_name(calculate_qb_floor(players_df))
     if qbs.empty:
@@ -562,8 +604,10 @@ def render_qb_konami_code(players_df: pd.DataFrame) -> None:
     )
     st.altair_chart(chart, use_container_width=True)
     st.dataframe(
-        qbs[["player_name", "editorial_team_abbr", "passing_points", "qb_floor_score"]]
-        .rename(columns={"editorial_team_abbr": "team", "qb_floor_score": "rushing_floor_score"}),
+        qbs[["player_name", "editorial_team_abbr", "passing_points", "qb_floor_score", "ngs_cpoe"]]
+        .rename(columns={
+            "editorial_team_abbr": "team", "qb_floor_score": "rushing_floor_score", "ngs_cpoe": "CPOE",
+        }),
         use_container_width=True,
         hide_index=True,
     )
@@ -612,10 +656,12 @@ def render_breakout_radar(players_df: pd.DataFrame) -> None:
     st.caption(
         "Scans for the same predictive patterns behind last season's hardest-to-see-coming "
         "performers: an injury-opened opportunity, a new offensive play-caller, target share "
-        "running ahead of the box score, the wider Yahoo market catching on early, or a Day 3/UDFA "
-        "rookie already earning more volume than their draft slot implied. Also flags (but doesn't "
-        "score against) a QB \"sophomore slump\" caution -- rookie QBs who finished top-15 in PPG "
-        "have historically declined more often than not in Year 2."
+        "running ahead of the box score, the wider Yahoo market catching on early, a Day 3/UDFA "
+        "rookie already earning more volume than their draft slot implied, a favorable Vegas-implied "
+        "game script, or the wider fantasy market (via Sleeper's trending-adds data, not just this "
+        "Yahoo league) catching on. Also flags (but doesn't score against) a QB \"sophomore slump\" "
+        "caution -- rookie QBs who finished top-15 in PPG have historically declined more often than "
+        "not in Year 2."
     )
     candidates = _with_display_name(find_breakout_signals(players_df))
     if candidates.empty:
@@ -636,8 +682,9 @@ def render_te_difference_makers(players_df: pd.DataFrame) -> None:
         "TE is unusually top-heavy -- a handful of must-start options, then a canyon, then "
         "touchdown-dependent streamers. Ranks TEs by the signals that predict a jump into that "
         "top tier *before* the box score shows it: real target share, a real red-zone role, "
-        "actually running receiving routes (not just blocking), and a good, high-volume passing "
-        "offense to work in -- plus the same opportunity signals as Breakout Radar."
+        "actually running receiving routes (not just blocking), real route-running separation "
+        "(Next Gen Stats), and a good, high-volume passing offense to work in -- plus the same "
+        "opportunity signals as Breakout Radar."
     )
     ranked = _with_display_name(find_te_difference_makers(players_df))
     if ranked.empty:
@@ -646,11 +693,11 @@ def render_te_difference_makers(players_df: pd.DataFrame) -> None:
 
     display = ranked[
         ["player_name", "editorial_team_abbr", "te_score", "target_share", "red_zone_share",
-         "te_snap_share", "team_pass_rate", "te_signals"]
+         "te_snap_share", "ngs_separation", "team_pass_rate", "te_signals"]
     ].rename(columns={
         "editorial_team_abbr": "team", "te_score": "score", "target_share": "target share",
         "red_zone_share": "red-zone share", "te_snap_share": "snap share (receiving role)",
-        "team_pass_rate": "team pass rate",
+        "ngs_separation": "separation (yds)", "team_pass_rate": "team pass rate",
     })
     display["te_signals"] = display["te_signals"].apply(lambda s: " | ".join(s) if s else "")
     st.dataframe(display, use_container_width=True, hide_index=True)
@@ -707,14 +754,19 @@ def render_oline_rankings() -> None:
     st.dataframe(
         display[[
             "oline_rank", "team", "oline_score", "trend", "new_starters_count", "coaching_change",
-            "sack_rate", "qb_hit_rate", "yards_per_carry", "stuff_rate", "continuity_share",
+            "sack_rate", "qb_hit_rate", "avg_time_to_throw", "yards_per_carry", "stuff_rate", "continuity_share",
         ]].rename(columns={
             "oline_rank": "rank", "oline_score": "score", "new_starters_count": "new starters",
-            "sack_rate": "sack rate", "qb_hit_rate": "QB hit rate", "yards_per_carry": "YPC",
-            "stuff_rate": "stuff rate", "continuity_share": "lineup continuity",
+            "sack_rate": "sack rate", "qb_hit_rate": "QB hit rate", "avg_time_to_throw": "QB time to throw (s)",
+            "yards_per_carry": "YPC", "stuff_rate": "stuff rate", "continuity_share": "lineup continuity",
         }),
         use_container_width=True,
         hide_index=True,
+    )
+    st.caption(
+        "\"QB time to throw\" is context, not part of the score: a high sack rate paired with a "
+        "*long* time to throw points at the O-line; paired with a *short* time to throw, it points "
+        "more at the QB/scheme (Next Gen Stats)."
     )
 
     movers = rankings.dropna(subset=["rank_change"]).copy()

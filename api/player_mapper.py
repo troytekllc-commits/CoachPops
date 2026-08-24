@@ -157,6 +157,14 @@ def player_to_row(player, stat_id_map: Optional[Dict[int, str]] = None) -> Dict[
         "te_snap_share": None,
         "team_pass_rate": None,
         "team_pass_epa": None,
+        "game_script_spread": None,
+        "game_script_total": None,
+        "game_script_implied_team_total": None,
+        "ngs_separation": None,
+        "ngs_yac_above_expectation": None,
+        "ngs_time_to_throw": None,
+        "ngs_cpoe": None,
+        "sleeper_trending_adds": None,
         "injury_opportunity": False,
         "injury_opportunity_ahead_player": None,
         "injury_opportunity_ahead_status": None,
@@ -179,6 +187,7 @@ def build_players_dataframe(
     enrich: bool = True,
     season: Optional[int] = None,
     through_week: Optional[int] = None,
+    include_sleeper_trending: bool = True,
 ) -> pd.DataFrame:
     """Convert a list of yfpy `Player` objects (e.g. from
     `auth.get_waiver_wire_players()`) into the DataFrame shape the
@@ -204,6 +213,11 @@ def build_players_dataframe(
             `enrich=True`). Defaults to `nfl_enrichment.default_nfl_season()`.
         through_week: Only use enrichment data through this week (only used
             if `enrich=True`). Defaults to all available weeks.
+        include_sleeper_trending: If True (default), backfill
+            `sleeper_trending_adds` from Sleeper's free public API (see
+            `api/external_sources.py`). A failed/unreachable request
+            (e.g. no network) is logged and skipped rather than raised --
+            this is a nice-to-have signal, not core functionality.
 
     Returns:
         pd.DataFrame: One row per player, ready for `data/calculators.py`.
@@ -226,5 +240,14 @@ def build_players_dataframe(
         from api.nfl_enrichment import default_nfl_season, enrich_players_dataframe
 
         df = enrich_players_dataframe(df, season or default_nfl_season(), through_week)
+
+    if include_sleeper_trending and not df.empty:
+        try:
+            from api.external_sources import build_sleeper_trending_lookup
+
+            trending = build_sleeper_trending_lookup()
+            df["sleeper_trending_adds"] = df["player_id"].apply(lambda pid: trending.get(str(pid)))
+        except Exception as exc:
+            logger.warning("Couldn't fetch Sleeper trending data (skipping): %s", exc)
 
     return df

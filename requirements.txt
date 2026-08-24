@@ -2,3 +2,4 @@ pandas
 yfpy
 streamlit
 nfl_data_py
+requests

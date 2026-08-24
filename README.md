@@ -23,16 +23,33 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
     changes (real for head coaches via `import_schedules()`; manual/opt-in
     for coordinators — see `data/coaching_changes.csv.example`), a QB
     "sophomore slump" caution flag, and a rough `projected_points_by_week`
-    baseline. See its module docstring for coverage (~half of rostered
-    players) and every accuracy caveat.
+    baseline. Also pulls in two more real data sources (see "Additional data
+    sources" below): Vegas game-script context (`build_game_script_lookup()`,
+    from `import_schedules()`'s own `spread_line`/`total_line` columns) and
+    Next Gen Stats route-running/passing metrics (`build_ngs_receiving_lookup()`/
+    `build_ngs_passing_lookup()`). See its module docstring for coverage
+    (~half of rostered players for the nflverse-crosswalk fields) and every
+    accuracy caveat.
+  - `external_sources.py` — pulls player-level trending data from
+    [Sleeper](https://sleeper.com/)'s free, no-auth public API (a different
+    fantasy platform, not Yahoo) via its own `yahoo_id` field, so it needs no
+    name matching either: `build_sleeper_trending_lookup()` returns how many
+    times each player was added across Sleeper leagues in the last 24 hours —
+    a signal for "the wider fantasy market is catching on," independent of
+    and often faster-moving than this one Yahoo league's `percent_owned`.
+    Wrapped in a try/except everywhere it's called — a failed/unreachable
+    request is logged and skipped, never raised, since this is a nice-to-have
+    signal, not core functionality.
 - `data/` — analytics engines and local data/caches
   - `calculators.py` — seven pandas-based scoring engines tuned for this
     league's 3-WR / 6-bench / 2-IR format: `calculate_custom_value()`,
     `apply_rookie_bump()`, `calculate_qb_floor()`, `find_ir_stashes()`,
-    `evaluate_wr_scarcity()`, `find_breakout_signals()`,
+    `evaluate_wr_scarcity()`, `find_breakout_signals()` (now also credits a
+    favorable Vegas-implied team total and a Sleeper trending-adds spike),
     `find_te_difference_makers()` (target share, red-zone share, TE snap
-    share/receiving-role split, and team pass volume/efficiency — the
-    pre-box-score signals that predict a jump into TE's thin top tier).
+    share/receiving-role split, team pass volume/efficiency, and Next Gen
+    Stats route-running separation — the pre-box-score signals that predict
+    a jump into TE's thin top tier).
   - `coaching_changes.csv.example` — template for the manually maintained
     OC/DC-hire data `nfl_enrichment.py` reads (copy to `coaching_changes.csv`
     and fill in from public reporting each offseason — no API exists for
@@ -42,7 +59,11 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
   Yahoo data needed): pass protection and run blocking from play-by-play
   data, starting-five continuity from snap counts, and draft investment,
   combined into a 0-100 score per team, plus year-over-year rank change,
-  new-starter turnover, and coaching-change flags.
+  new-starter turnover, and coaching-change flags. Also surfaces each
+  team's Next Gen Stats average QB time-to-throw as display-only context
+  (`compute_team_time_to_throw()`) — not part of the composite score, but a
+  read on whether a high sack rate points at the O-line (long time-to-throw)
+  or the QB/scheme (short time-to-throw).
 - `api/team_change_analytics.py` — tracks QB/RB/WR/TE players who changed
   teams since last season and lays out the context that determines
   whether it helps or hurts (team pass rate/efficiency, O-Line strength,
@@ -164,6 +185,40 @@ points-per-game baseline, not a true projection — see
 checkbox off to see Yahoo-only data instead, in which case only **League
 Optimizer** and **QB Konami Code** will show results (Breakout Radar can
 still fire on Yahoo's own `percent_owned` data alone).
+
+### Additional data sources
+
+Beyond Yahoo and nflverse's core stats, three more real (non-mock) data
+sources feed the calculators above:
+
+- **Vegas game script** (`build_game_script_lookup()` in
+  `api/nfl_enrichment.py`): each team's point spread and implied point total
+  for its next scheduled game, from `import_schedules()`'s own
+  `spread_line`/`total_line` columns (the older `import_sc_lines()` stops
+  around 2020 and isn't usable for a current season). The spread's sign
+  convention (positive = that team favored) was verified empirically against
+  actual game margins, not assumed. A team projected for a high implied
+  total is playing in a game expected to feature more scoring — a real,
+  pre-box-score tailwind `find_breakout_signals()` now credits. During the
+  off-season, with no upcoming game on the schedule, this falls back to the
+  final week of the completed season rather than showing nothing.
+- **Next Gen Stats** (`load_ngs_receiving()`/`load_ngs_passing()` and their
+  `build_*_lookup()` counterparts in `api/nfl_enrichment.py`): route-running
+  separation and YAC-over-expectation for receivers/TEs, and time-to-throw
+  and completion-%-over-expectation (CPOE) for QBs — all joined via the real
+  `player_gsis_id` NGS already carries, no name matching needed. Separation
+  feeds `find_te_difference_makers()` directly; CPOE is shown for context in
+  QB Konami Code; time-to-throw is shown for context in O-Line Power
+  Rankings (see above).
+- **Sleeper trending adds** (`api/external_sources.py`): how many times each
+  player was added across Sleeper's (a different, no-auth, free-API fantasy
+  platform) leagues in the last 24 hours, joined via the `yahoo_id` field
+  Sleeper's own player database carries. A spike here is the wider fantasy
+  market catching on, often before this one Yahoo league's own
+  `percent_owned` moves — `find_breakout_signals()` credits a large spike
+  (5,000+ recent adds). Coverage is partial (verified live: roughly 9 of the
+  top 50 trending players matched a `yahoo_id`) and a failed request is
+  skipped, not raised.
 
 ### Breakout Radar
 

@@ -339,6 +339,95 @@ def load_schedules(season: int) -> pd.DataFrame:
     return nfl.import_schedules([season])
 
 
+def build_game_script_lookup(season: int, week: Optional[int] = None) -> Dict[str, dict]:
+    """Per-team Vegas context for one week: the spread (positive = that
+    team is favored by that many points -- verified empirically via its
+    correlation with actual home-team margin, not assumed) and each
+    team's own implied point total, derived from `import_schedules()`'s
+    `spread_line`/`total_line` columns (works for the current season --
+    unlike `import_sc_lines()`, which stops around 2020).
+
+    Implied team total: for the home team, ``(total_line + spread_line) / 2``;
+    for the away team, ``(total_line - spread_line) / 2`` (the two add up
+    to `total_line`, and the favored team -- higher `spread_line` side --
+    gets the larger share).
+
+    Args:
+        season: NFL season year.
+        week: Week to use. Defaults to the earliest week in the schedule
+            with no result recorded yet (i.e. the next upcoming game) --
+            falls back to the latest played week if the whole season is
+            already final.
+    """
+    games = load_schedules(season)
+    games = games.dropna(subset=["spread_line", "total_line"])
+
+    if week is None:
+        upcoming = games[games["home_score"].isna()]
+        week = int(upcoming["week"].min()) if not upcoming.empty else int(games["week"].max())
+
+    games = games[games["week"] == week]
+
+    lookup: Dict[str, dict] = {}
+    for _, row in games.iterrows():
+        home, away = _normalize_team_abbr(row["home_team"]), _normalize_team_abbr(row["away_team"])
+        spread, total = row["spread_line"], row["total_line"]
+        home_implied = (total + spread) / 2
+        away_implied = (total - spread) / 2
+        lookup[home] = {"game_script_spread": spread, "game_script_total": total, "game_script_implied_team_total": home_implied}
+        lookup[away] = {"game_script_spread": -spread, "game_script_total": total, "game_script_implied_team_total": away_implied}
+    return lookup
+
+
+@lru_cache(maxsize=8)
+def load_ngs_receiving(season: int) -> pd.DataFrame:
+    """Season-aggregate (week=0, REG) Next Gen Stats receiving data --
+    average separation, cushion, and YAC-over-expectation per player."""
+    import nfl_data_py as nfl
+
+    ngs = nfl.import_ngs_data("receiving", [season])
+    return ngs[(ngs["week"] == 0) & (ngs["season_type"] == "REG")]
+
+
+@lru_cache(maxsize=8)
+def load_ngs_passing(season: int) -> pd.DataFrame:
+    """Season-aggregate (week=0, REG) Next Gen Stats passing data --
+    average time to throw and completion % above expectation (CPOE) per QB."""
+    import nfl_data_py as nfl
+
+    ngs = nfl.import_ngs_data("passing", [season])
+    return ngs[(ngs["week"] == 0) & (ngs["season_type"] == "REG")]
+
+
+def build_ngs_receiving_lookup(season: int) -> Dict[str, dict]:
+    """{gsis_id: {avg_separation, avg_yac_above_expectation, catch_percentage}}
+    -- a route-running/hands skill signal independent of scheme or volume."""
+    ngs = load_ngs_receiving(season)
+    return {
+        row["player_gsis_id"]: {
+            "ngs_separation": row["avg_separation"],
+            "ngs_yac_above_expectation": row["avg_yac_above_expectation"],
+        }
+        for _, row in ngs.dropna(subset=["player_gsis_id"]).iterrows()
+    }
+
+
+def build_ngs_passing_lookup(season: int) -> Dict[str, dict]:
+    """{gsis_id: {avg_time_to_throw, completion_percentage_above_expectation}}
+    -- CPOE is a well-regarded "hidden QB skill" metric independent of raw
+    box score; time-to-throw helps separate "bad O-line" from "QB holds
+    the ball too long" when reading sack rate (see api/oline_analytics.py's
+    documented caveat about conflating the two)."""
+    ngs = load_ngs_passing(season)
+    return {
+        row["player_gsis_id"]: {
+            "ngs_time_to_throw": row["avg_time_to_throw"],
+            "ngs_cpoe": row["completion_percentage_above_expectation"],
+        }
+        for _, row in ngs.dropna(subset=["player_gsis_id"]).iterrows()
+    }
+
+
 # Team codes differ across nflverse's own datasets, let alone Yahoo's
 # `editorial_team_abbr` -- normalize everything to this convention before
 # joining team-level signals. `import_draft_picks()`'s `team` column uses
@@ -495,6 +584,7 @@ def build_enrichment_lookup(
     through_week: Optional[int] = None,
     injury_week: Optional[int] = None,
     coordinator_csv_path: Optional[Path] = None,
+    game_script_week: Optional[int] = None,
 ) -> Dict[str, dict]:
     """Build a ``{yahoo_id: {...enrichment fields...}}`` lookup for one season.
 
@@ -506,6 +596,9 @@ def build_enrichment_lookup(
             used to compute ``target_share``/points-per-game averages
             (useful for excluding future/unplayed weeks). Defaults to all
             available weeks.
+        game_script_week: Week to pull Vegas game-script context for.
+            Defaults (via ``build_game_script_lookup``) to the next
+            upcoming game.
     """
     rosters = load_seasonal_rosters(season)
     draft_picks = load_draft_picks(season)
@@ -519,6 +612,9 @@ def build_enrichment_lookup(
     qb_year2_flags_by_gsis = build_qb_year2_regression_flags(season)
     te_snap_share_by_gsis = build_te_snap_share_lookup(season)
     offense_context_by_team = compute_team_offense_context(season).set_index("team")
+    game_script_by_team = build_game_script_lookup(season, game_script_week)
+    ngs_receiving_by_gsis = build_ngs_receiving_lookup(season)
+    ngs_passing_by_gsis = build_ngs_passing_lookup(season)
 
     draft_by_gsis = {
         row["gsis_id"]: {"round": int(row["round"]), "pick": int(row["pick"])}
@@ -536,6 +632,9 @@ def build_enrichment_lookup(
         coaching_change = coaching_change_by_team.get(team, {})
         qb_year2 = qb_year2_flags_by_gsis.get(gsis_id, {})
         offense_context = offense_context_by_team.loc[team] if team in offense_context_by_team.index else None
+        game_script = game_script_by_team.get(team, {})
+        ngs_rec = ngs_receiving_by_gsis.get(gsis_id, {})
+        ngs_pass = ngs_passing_by_gsis.get(gsis_id, {})
 
         lookup[yahoo_id] = {
             "is_rookie": bool(row.get("rookie_year") == season),
@@ -546,6 +645,13 @@ def build_enrichment_lookup(
             "te_snap_share": te_snap_share_by_gsis.get(gsis_id),
             "team_pass_rate": offense_context["pass_rate"] if offense_context is not None else None,
             "team_pass_epa": offense_context["pass_epa"] if offense_context is not None else None,
+            "game_script_spread": game_script.get("game_script_spread"),
+            "game_script_total": game_script.get("game_script_total"),
+            "game_script_implied_team_total": game_script.get("game_script_implied_team_total"),
+            "ngs_separation": ngs_rec.get("ngs_separation"),
+            "ngs_yac_above_expectation": ngs_rec.get("ngs_yac_above_expectation"),
+            "ngs_time_to_throw": ngs_pass.get("ngs_time_to_throw"),
+            "ngs_cpoe": ngs_pass.get("ngs_cpoe"),
             "projected_points_by_week": estimate_projected_points_by_week(ppg_by_gsis.get(gsis_id)),
             "injury_opportunity": injury_opp.get("injury_opportunity", False),
             "injury_opportunity_ahead_player": injury_opp.get("injury_opportunity_ahead_player"),
@@ -566,6 +672,8 @@ def build_enrichment_lookup(
 ENRICHMENT_FIELDS = (
     "is_rookie", "draft_capital", "target_share", "deep_target_share", "red_zone_share",
     "te_snap_share", "team_pass_rate", "team_pass_epa",
+    "game_script_spread", "game_script_total", "game_script_implied_team_total",
+    "ngs_separation", "ngs_yac_above_expectation", "ngs_time_to_throw", "ngs_cpoe",
     "projected_points_by_week", "injury_opportunity", "injury_opportunity_ahead_player",
     "injury_opportunity_ahead_status", "team_new_head_coach", "team_head_coach_name",
     "team_new_offensive_coordinator", "team_offensive_coordinator_name",
@@ -579,6 +687,7 @@ def enrich_players_dataframe(
     through_week: Optional[int] = None,
     injury_week: Optional[int] = None,
     coordinator_csv_path: Optional[Path] = None,
+    game_script_week: Optional[int] = None,
 ) -> pd.DataFrame:
     """Fill in every field listed in ``ENRICHMENT_FIELDS`` on a Yahoo
     players DataFrame (as produced by ``api/player_mapper.py``), using
@@ -589,7 +698,7 @@ def enrich_players_dataframe(
     Players whose ``player_id`` has no match in that crosswalk are left
     with whatever defaults they already had (see module docstring).
     """
-    lookup = build_enrichment_lookup(season, through_week, injury_week, coordinator_csv_path)
+    lookup = build_enrichment_lookup(season, through_week, injury_week, coordinator_csv_path, game_script_week)
     df = players_df.copy()
 
     for field in ENRICHMENT_FIELDS:

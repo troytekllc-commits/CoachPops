@@ -32,7 +32,11 @@ QB hits are a real but incomplete proxy: a scrambling, extend-the-play
 QB (or a run-heavy offense with few dropbacks) can distort these
 independent of actual blocking quality. Treat ``oline_score`` as
 directional -- useful for spotting real trends and outliers -- not as an
-authoritative grade.
+authoritative grade. ``compute_team_time_to_throw()`` (Next Gen Stats)
+partially addresses this specific ambiguity -- a high sack rate paired
+with a *long* time-to-throw points at the O-line; paired with a *short*
+time-to-throw, it points more at the QB/scheme -- but it's a partial read,
+not a full fix, and isn't part of the composite score itself.
 
 Forward-looking use: there's no play-by-play data for a season that
 hasn't happened yet, so "predicting" the *upcoming* season's strongest
@@ -55,6 +59,7 @@ from api.nfl_enrichment import (
     _normalize_team_abbr,
     build_coaching_change_lookup,
     load_draft_picks,
+    load_ngs_passing,
     load_pbp,
 )
 
@@ -168,6 +173,21 @@ def _percentile_rank(series: pd.Series, higher_is_better: bool = True) -> pd.Ser
     return ranked if higher_is_better else (1 - ranked)
 
 
+def compute_team_time_to_throw(season: int) -> pd.DataFrame:
+    """Team-average QB time-to-throw (attempts-weighted across every QB who
+    played for that team), from Next Gen Stats passing data -- context,
+    NOT part of `oline_score`, for exactly the caveat in this module's
+    docstring: a high sack rate paired with a *long* time-to-throw points
+    at the O-line; a high sack rate paired with a *short* time-to-throw
+    points more at the QB holding the ball or the scheme."""
+    ngs = load_ngs_passing(season).copy()
+    ngs["team"] = ngs["team_abbr"].apply(_normalize_team_abbr)
+    ngs["weighted_ttt"] = ngs["avg_time_to_throw"] * ngs["attempts"]
+    grouped = ngs.groupby("team").agg(weighted_ttt=("weighted_ttt", "sum"), attempts=("attempts", "sum"))
+    grouped["avg_time_to_throw"] = grouped["weighted_ttt"] / grouped["attempts"]
+    return grouped[["avg_time_to_throw"]].reset_index()
+
+
 def build_oline_power_rankings(season: int) -> pd.DataFrame:
     """One row per team, ranked by composite `oline_score` (0-100, higher
     is better). See module docstring for exactly what goes into it."""
@@ -175,6 +195,7 @@ def build_oline_power_rankings(season: int) -> pd.DataFrame:
     df = df.merge(compute_run_blocking(season), on="team", how="outer")
     df = df.merge(compute_oline_continuity(season), on="team", how="outer")
     df = df.merge(compute_draft_investment(season), on="team", how="outer")
+    df = df.merge(compute_team_time_to_throw(season), on="team", how="left")
 
     df["pass_protection_pct"] = (
         _percentile_rank(df["sack_rate"], higher_is_better=False)

@@ -47,6 +47,16 @@ Expected columns on the input DataFrame
 - ``qb_year1_ppg``               (float) that rookie season's PPG
 - ``percent_owned`` / ``percent_owned_delta`` (float) Yahoo's league-wide
                                   ownership % and its week-over-week change
+- ``game_script_spread`` / ``game_script_total`` / ``game_script_implied_team_total``
+                                  (float) Vegas context for this week's game
+                                  (positive spread = that team is favored)
+- ``ngs_separation`` / ``ngs_yac_above_expectation`` (float) Next Gen Stats
+                                  receiving skill metrics
+- ``ngs_time_to_throw`` / ``ngs_cpoe`` (float) Next Gen Stats passing
+                                  metrics (QBs only)
+- ``sleeper_trending_adds``       (int) recent add count across all of
+                                  Sleeper (not just this league) -- see
+                                  ``api/external_sources.py``
 
 Not every calculator needs every column -- see each docstring below.
 """
@@ -307,6 +317,8 @@ BREAKOUT_SIGNAL_WEIGHTS: Dict[str, float] = {
     "meaningful_ownership_elsewhere": 0.5,
     "draft_capital_undersold": 1.5,
     "earned_red_zone_role": 1.0,
+    "favorable_game_script": 1.0,
+    "sleeper_trending": 0.75,
 }
 
 RISING_OWNERSHIP_DELTA_THRESHOLD = 3.0  # percentage points, week over week
@@ -317,6 +329,8 @@ UNDERSOLD_ROOKIE_RED_ZONE_SHARE = 0.10
 EARNED_RED_ZONE_SHARE_THRESHOLD = 0.20
 EFFICIENCY_GAP_THRESHOLD = 0.30  # percentile-rank gap within position
 MIN_POSITION_GROUP_FOR_EFFICIENCY_CHECK = 3
+FAVORABLE_IMPLIED_TEAM_TOTAL = 24.0  # Vegas-implied team point total (api/nfl_enrichment.py's game_script_*)
+SLEEPER_TRENDING_ADD_THRESHOLD = 5000  # sleeper_trending_adds -- Sleeper's own scale, not a percentage
 
 
 def _efficiency_ahead_of_production_gap(players_df: pd.DataFrame) -> pd.Series:
@@ -352,8 +366,11 @@ def find_breakout_signals(players_df: pd.DataFrame, min_score: float = 1.0) -> p
     last season's hardest-to-see-coming fantasy performers: an injury-opened
     opportunity, a new offensive play-caller, efficiency metrics running
     ahead of the box score, the wider Yahoo market catching on before your
-    own league does, or a Day 3/UDFA rookie already earning more volume
-    than their draft slot implied.
+    own league does, a Day 3/UDFA rookie already earning more volume
+    than their draft slot implied, a favorable Vegas-implied game script
+    (`api/nfl_enrichment.py`'s `game_script_implied_team_total`), or the
+    wider fantasy market (not just this Yahoo league) catching on via
+    Sleeper's trending-adds data (`api/external_sources.py`).
 
     Also raises (but doesn't score against) a QB "sophomore slump" caution:
     rookie QBs who finished top-15 in fantasy PPG have historically
@@ -439,6 +456,16 @@ def find_breakout_signals(players_df: pd.DataFrame, min_score: float = 1.0) -> p
             score += BREAKOUT_SIGNAL_WEIGHTS["earned_red_zone_role"]
             signals.append(f"Earned red-zone role ({row['red_zone_share'] * 100:.0f}% of team share)")
 
+        implied_total = row.get("game_script_implied_team_total")
+        if implied_total is not None and pd.notna(implied_total) and implied_total >= FAVORABLE_IMPLIED_TEAM_TOTAL:
+            score += BREAKOUT_SIGNAL_WEIGHTS["favorable_game_script"]
+            signals.append(f"Favorable game script (Vegas-implied {implied_total:.1f} team points)")
+
+        trending = row.get("sleeper_trending_adds")
+        if trending is not None and pd.notna(trending) and trending >= SLEEPER_TRENDING_ADD_THRESHOLD:
+            score += BREAKOUT_SIGNAL_WEIGHTS["sleeper_trending"]
+            signals.append(f"Trending across Sleeper ({int(trending):,} adds recently)")
+
         if row.get("qb_year2_regression_caution"):
             cautions.append(
                 f"Sophomore-slump caution: top-15 QB PPG as a rookie ({row.get('qb_year1_ppg')} pts/gm) -- "
@@ -465,13 +492,16 @@ def find_breakout_signals(players_df: pd.DataFrame, min_score: float = 1.0) -> p
 # it: real target volume, a real red-zone role, actually running receiving
 # routes rather than mostly blocking (`te_snap_share` alone doesn't
 # distinguish these -- it's `te_snap_share` combined with `target_share`
-# that does), and a good, high-volume passing offense to work in.
+# that does), a good, high-volume passing offense to work in, and real
+# route-running separation (Next Gen Stats' `ngs_separation` -- getting
+# open is a skill signal independent of scheme or volume).
 TE_SIGNAL_WEIGHTS: Dict[str, float] = {
-    "target_share": 0.30,
+    "target_share": 0.25,
     "red_zone_share": 0.20,
     "te_snap_share": 0.15,
     "team_pass_rate": 0.15,
-    "team_pass_epa": 0.10,
+    "team_pass_epa": 0.05,
+    "ngs_separation": 0.10,
     "opportunity_bonus": 0.10,  # injury_opportunity / new offensive coordinator, from Breakout Radar's fields
 }
 MIN_TE_GROUP_FOR_PERCENTILE = 3
@@ -484,10 +514,11 @@ def find_te_difference_makers(players_df: pd.DataFrame, min_score: float = 0.0) 
 
     Requires the enrichment fields from `api/nfl_enrichment.py`
     (`target_share`, `red_zone_share`, `te_snap_share`, `team_pass_rate`,
-    `team_pass_epa`, `injury_opportunity`, `team_new_offensive_coordinator`).
-    With too few TEs in the pool to compute a meaningful percentile
-    (fewer than `MIN_TE_GROUP_FOR_PERCENTILE`), returns an empty DataFrame
-    rather than a misleading rank of 1.
+    `team_pass_epa`, `ngs_separation`, `injury_opportunity`,
+    `team_new_offensive_coordinator`). With too few TEs in the pool to
+    compute a meaningful percentile (fewer than
+    `MIN_TE_GROUP_FOR_PERCENTILE`), returns an empty DataFrame rather than
+    a misleading rank of 1.
 
     Args:
         players_df: Player records, enriched via `api/nfl_enrichment.py`.
@@ -524,6 +555,7 @@ def find_te_difference_makers(players_df: pd.DataFrame, min_score: float = 0.0) 
         + TE_SIGNAL_WEIGHTS["te_snap_share"] * pct("te_snap_share")
         + TE_SIGNAL_WEIGHTS["team_pass_rate"] * pct("team_pass_rate")
         + TE_SIGNAL_WEIGHTS["team_pass_epa"] * pct("team_pass_epa")
+        + TE_SIGNAL_WEIGHTS["ngs_separation"] * pct("ngs_separation")
         + TE_SIGNAL_WEIGHTS["opportunity_bonus"] * opportunity_bonus
     )
 
@@ -535,6 +567,8 @@ def find_te_difference_makers(players_df: pd.DataFrame, min_score: float = 0.0) 
             found.append(f"Top-quartile red-zone share ({row['red_zone_share']:.0%})")
         if pd.notna(row.get("te_snap_share")) and row["te_snap_share"] >= 0.7:
             found.append(f"True receiving-role snap share ({row['te_snap_share']:.0%})")
+        if pd.notna(row.get("ngs_separation")) and row["ngs_separation"] >= tes["ngs_separation"].quantile(0.75):
+            found.append(f"Top-quartile route-running separation ({row['ngs_separation']:.1f} yds)")
         if row.get("injury_opportunity"):
             found.append(f"Opportunity: {row.get('injury_opportunity_ahead_player')} is {row.get('injury_opportunity_ahead_status')}")
         if row.get("team_new_offensive_coordinator"):
