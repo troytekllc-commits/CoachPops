@@ -577,6 +577,137 @@ def render_breakout_radar(players_df: pd.DataFrame) -> None:
     st.dataframe(display, use_container_width=True, hide_index=True)
 
 
+def render_oline_rankings() -> None:
+    """Team-level O-Line Power Rankings. Unlike every other tab, this one
+    needs no Yahoo data at all -- pure nfl_data_py -- so it works the same
+    whether the sidebar is set to mock or live Yahoo data."""
+    from api.nfl_enrichment import default_nfl_season
+    from api.oline_analytics import build_oline_rankings_with_trend
+
+    st.subheader("O-Line Power Rankings")
+    st.caption(
+        "Team-level, built entirely from nfl_data_py -- no Yahoo access needed. Combines pass "
+        "protection (sack/QB-hit rate per dropback), run blocking (yards per carry, stuff rate), "
+        "starting-five continuity (share of O-line snaps held by the top 5), and trailing 4-year "
+        "O-line draft investment into one 0-100 score, plus year-over-year rank change, new-starter "
+        "turnover, and coaching-change flags. There's no true PFF-style per-lineman grading "
+        "available for free, so treat the score as directional -- see `api/oline_analytics.py` for "
+        "the full methodology and its limits."
+    )
+
+    season = st.number_input(
+        "Season", min_value=2015, max_value=2035, value=default_nfl_season(), step=1, key="oline_season"
+    )
+
+    @st.cache_data(ttl=3600, show_spinner="Crunching play-by-play, snap counts, and draft data...")
+    def _load(season: int) -> pd.DataFrame:
+        return build_oline_rankings_with_trend(season)
+
+    try:
+        rankings = _load(int(season))
+    except Exception as exc:
+        st.error(f"Couldn't build O-Line rankings for {season}: {exc}")
+        return
+
+    display = rankings.copy()
+    display["trend"] = display["rank_change"].apply(
+        lambda d: f"▲{int(d)}" if pd.notna(d) and d > 0 else (
+            f"▼{int(abs(d))}" if pd.notna(d) and d < 0 else ("–" if pd.notna(d) else "new")
+        )
+    )
+    display["coaching_change"] = display.apply(
+        lambda r: ", ".join(
+            filter(None, [
+                "New OC" if r.get("new_offensive_coordinator") else None,
+                "New HC" if r.get("new_head_coach") else None,
+            ])
+        ) or "—",
+        axis=1,
+    )
+
+    st.dataframe(
+        display[[
+            "oline_rank", "team", "oline_score", "trend", "new_starters_count", "coaching_change",
+            "sack_rate", "qb_hit_rate", "yards_per_carry", "stuff_rate", "continuity_share",
+        ]].rename(columns={
+            "oline_rank": "rank", "oline_score": "score", "new_starters_count": "new starters",
+            "sack_rate": "sack rate", "qb_hit_rate": "QB hit rate", "yards_per_carry": "YPC",
+            "stuff_rate": "stuff rate", "continuity_share": "lineup continuity",
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    movers = rankings.dropna(subset=["rank_change"]).copy()
+    if not movers.empty:
+        movers["abs_change"] = movers["rank_change"].abs()
+        movers = movers.sort_values("abs_change", ascending=False).head(5)
+        mover_text = ", ".join(
+            f"{row.team} ({'+' if row.rank_change > 0 else ''}{int(row.rank_change)})"
+            for row in movers.itertuples()
+        )
+        st.caption(f"Biggest rank movers vs. last season: {mover_text}")
+
+
+def render_team_change_report() -> None:
+    """Skill-position players who changed teams, with old-vs-new team
+    context. Like O-Line Power Rankings, this is pure nfl_data_py -- no
+    Yahoo data needed."""
+    from api.nfl_enrichment import default_nfl_season
+    from api.team_change_analytics import build_team_change_report
+
+    st.subheader("Team Change Impact")
+    st.caption(
+        "Every QB/RB/WR/TE who changed teams since last season, with the context that actually "
+        "determines whether it helps or hurts: team pass rate/efficiency, O-Line strength "
+        "(reusing the O-Line Power Rankings tab), how crowded the new team's WR/TE target "
+        "competition already is, and coaching changes. No single \"value went up/down\" score -- "
+        "how much a move helps is genuinely position-dependent, so read the context notes for "
+        "each player. See `api/team_change_analytics.py` for the full methodology and its limits."
+    )
+
+    season = st.number_input(
+        "Season", min_value=2016, max_value=2035, value=default_nfl_season(), step=1, key="team_change_season"
+    )
+    position_filter = st.multiselect(
+        "Position", options=["QB", "RB", "WR", "TE"], default=["QB", "RB", "WR", "TE"], key="team_change_position"
+    )
+
+    @st.cache_data(ttl=3600, show_spinner="Comparing team contexts across two seasons...")
+    def _load(season: int) -> pd.DataFrame:
+        return build_team_change_report(season)
+
+    try:
+        report = _load(int(season))
+    except Exception as exc:
+        st.error(f"Couldn't build the team change report for {season}: {exc}")
+        return
+
+    if report.empty:
+        st.info(f"No team changes found for {season} (or {season - 1} data isn't available).")
+        return
+
+    filtered = report[report["position"].isin(position_filter)]
+    if filtered.empty:
+        st.info("No movers match the selected position filter.")
+        return
+
+    st.dataframe(
+        filtered[
+            ["player_name", "position", "team_old", "team_new", "pass_rate_old", "pass_rate_new",
+             "oline_score_old", "oline_score_new", "wr_te_target_share_sum", "context_notes"]
+        ].rename(columns={
+            "player_name": "player", "team_old": "from", "team_new": "to",
+            "pass_rate_old": "pass rate (old)", "pass_rate_new": "pass rate (new)",
+            "oline_score_old": "O-line (old)", "oline_score_new": "O-line (new)",
+            "wr_te_target_share_sum": "new team WR/TE competition",
+            "context_notes": "context",
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def load_live_players_df(count_limit: int, enrich: bool, season: int) -> pd.DataFrame:
     """Pull real waiver-wire players via YahooAuthManager + player_mapper,
     optionally backfilled with nfl_data_py via nfl_enrichment.
@@ -665,7 +796,7 @@ def main() -> None:
         )
         players_df = build_mock_players_df()
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
         [
             "League Optimizer",
             "Rookie Radar",
@@ -673,6 +804,8 @@ def main() -> None:
             "IR Stash Targets",
             "WR3 Floor Finder",
             "Breakout Radar",
+            "O-Line Power Rankings",
+            "Team Change Impact",
         ]
     )
     with tab1:
@@ -687,6 +820,10 @@ def main() -> None:
         render_wr3_floor_finder(players_df)
     with tab6:
         render_breakout_radar(players_df)
+    with tab7:
+        render_oline_rankings()
+    with tab8:
+        render_team_change_report()
 
 
 if __name__ == "__main__":

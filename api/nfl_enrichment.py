@@ -89,14 +89,16 @@ def load_weekly_data(season: int) -> pd.DataFrame:
 
     return nfl.import_weekly_data(
         [season],
-        columns=["player_id", "week", "position", "target_share", "fantasy_points_ppr"],
+        columns=["player_id", "player_display_name", "recent_team", "week", "position", "target_share", "fantasy_points_ppr"],
     )
 
 
 @lru_cache(maxsize=8)
 def load_pbp(season: int) -> pd.DataFrame:
-    """Shared play-by-play loader for both deep-target-share and
-    red-zone-share -- avoids downloading the same season's pbp data twice."""
+    """Shared play-by-play loader for deep-target-share, red-zone-share,
+    api/oline_analytics.py's pass-protection/run-blocking metrics, and
+    api/team_change_analytics.py's team pace/efficiency context -- avoids
+    downloading the same season's pbp data more than once."""
     import nfl_data_py as nfl
 
     return nfl.import_pbp_data(
@@ -104,6 +106,7 @@ def load_pbp(season: int) -> pd.DataFrame:
         columns=[
             "game_id", "week", "posteam", "rusher_player_id", "receiver_player_id",
             "yardline_100", "air_yards", "rush_attempt", "pass_attempt",
+            "sack", "qb_hit", "qb_dropback", "yards_gained", "epa",
         ],
         downcast=True,
     )
@@ -257,10 +260,18 @@ def load_schedules(season: int) -> pd.DataFrame:
     return nfl.import_schedules([season])
 
 
-# A few team codes differ between nflverse's schedules/draft-pick data and
-# Yahoo's `editorial_team_abbr` -- normalize both sides to this convention
-# before joining team-level signals (head coach / coordinator changes).
-TEAM_ABBR_NORMALIZATION = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "STL": "LAR", "WSH": "WAS"}
+# Team codes differ across nflverse's own datasets, let alone Yahoo's
+# `editorial_team_abbr` -- normalize everything to this convention before
+# joining team-level signals. `import_draft_picks()`'s `team` column uses
+# PFR-style long codes (GNB/KAN/LVR/NOR/NWE/SFO/TAM) that don't match
+# `import_schedules()`/play-by-play's short codes (GB/KC/LV/NO/NE/SF/TB) at
+# all -- confirmed by a real duplicate-team bug in api/oline_analytics.py's
+# rankings (New England showed up as both "NWE" and "NE") before this map
+# was extended to cover them.
+TEAM_ABBR_NORMALIZATION = {
+    "LA": "LAR", "OAK": "LV", "SD": "LAC", "STL": "LAR", "WSH": "WAS",
+    "GNB": "GB", "KAN": "KC", "LVR": "LV", "NOR": "NO", "NWE": "NE", "SFO": "SF", "TAM": "TB",
+}
 
 
 def _normalize_team_abbr(abbr: Optional[str]) -> Optional[str]:

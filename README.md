@@ -35,10 +35,23 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
     and fill in from public reporting each offseason — no API exists for
     this, see the caveat above).
   - `cache/` — on-disk cache for pulled data (gitignored; kept via `.gitkeep`)
+- `api/oline_analytics.py` — **team-level** O-Line Power Rankings (no
+  Yahoo data needed): pass protection and run blocking from play-by-play
+  data, starting-five continuity from snap counts, and draft investment,
+  combined into a 0-100 score per team, plus year-over-year rank change,
+  new-starter turnover, and coaching-change flags.
+- `api/team_change_analytics.py` — tracks QB/RB/WR/TE players who changed
+  teams since last season and lays out the context that determines
+  whether it helps or hurts (team pass rate/efficiency, O-Line strength,
+  new team's WR/TE target competition, coaching changes) — deliberately
+  no single "value went up/down" score, since that's genuinely
+  position-dependent; see its module docstring.
 - `ui/` — Streamlit dashboard
-  - `dashboard.py` — 6-tab dashboard (League Optimizer, Rookie Radar,
-    QB Konami Code, IR Stash Targets, WR3 Floor Finder, Breakout Radar),
-    with a sidebar toggle between mock data and live Yahoo data.
+  - `dashboard.py` — 8-tab dashboard (League Optimizer, Rookie Radar,
+    QB Konami Code, IR Stash Targets, WR3 Floor Finder, Breakout Radar,
+    **O-Line Power Rankings**, **Team Change Impact**), with a sidebar
+    toggle between mock data and live Yahoo data. The last two tabs work
+    with zero Yahoo access — pure `nfl_data_py`.
 - `scripts/yahoo_login.py` — one-off CLI script that performs the initial
   Yahoo OAuth browser handshake (run this before switching the dashboard to
   live data).
