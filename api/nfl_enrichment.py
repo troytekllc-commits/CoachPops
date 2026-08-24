@@ -129,6 +129,68 @@ def load_weekly_data(season: int) -> pd.DataFrame:
     )
 
 
+# The raw box-score columns calculate_custom_value() actually needs --
+# load_weekly_data() above deliberately pulls a narrower set (it only
+# ever needed target_share/fantasy_points), so this is a separate loader
+# rather than widening that one and slowing down every other caller.
+_SEASON_STAT_RAW_COLUMNS = (
+    "passing_yards", "passing_tds", "interceptions", "rushing_yards", "rushing_tds",
+    "receptions", "receiving_yards", "receiving_tds", "sack_fumbles_lost",
+    "rushing_fumbles_lost", "receiving_fumbles_lost", "passing_2pt_conversions",
+    "rushing_2pt_conversions", "receiving_2pt_conversions",
+)
+
+
+@lru_cache(maxsize=8)
+def load_season_stat_totals(season: int) -> pd.DataFrame:
+    """Full-season raw stat totals per player (real column names
+    confirmed directly against nfl_data_py's actual output, not guessed),
+    reshaped to this project's internal stat names (``passing_touchdowns``,
+    ``fumbles_lost`` summed across sack/rush/receiving fumbles,
+    ``two_point_conversions`` summed across all three conversion types)
+    so the result can go straight into ``calculate_custom_value()``.
+
+    Built for ``build_draft_board_pool()`` -- everywhere else in this
+    project gets a player's value from ``fantasy_points`` (nfl_data_py's
+    own pre-computed total) or Yahoo's own stats; the draft board needs
+    the raw categories so *this league's own scoring weights* -- not
+    nfl_data_py's PPR-flavored default -- decide the value.
+    """
+    import nfl_data_py as nfl
+
+    weekly = nfl.import_weekly_data(
+        [season],
+        columns=["player_id", "player_display_name", "recent_team", "week", "position"]
+        + list(_SEASON_STAT_RAW_COLUMNS),
+    )
+
+    totals = weekly.groupby("player_id")[list(_SEASON_STAT_RAW_COLUMNS)].sum().reset_index()
+    # A player's team/position can appear to change row-to-row after an
+    # in-season trade or a data quirk -- take their LATEST week's info,
+    # not whatever groupby happens to pick, so the totals above (correctly
+    # summed across every team they played for) aren't fragmented by a
+    # naive multi-column groupby.
+    latest_info = (
+        weekly.sort_values("week")
+        .groupby("player_id")[["player_display_name", "recent_team", "position"]]
+        .last()
+        .reset_index()
+    )
+    merged = totals.merge(latest_info, on="player_id")
+
+    merged["fumbles_lost"] = (
+        merged["sack_fumbles_lost"] + merged["rushing_fumbles_lost"] + merged["receiving_fumbles_lost"]
+    )
+    merged["two_point_conversions"] = (
+        merged["passing_2pt_conversions"] + merged["rushing_2pt_conversions"] + merged["receiving_2pt_conversions"]
+    )
+    return merged.rename(columns={
+        "passing_tds": "passing_touchdowns",
+        "rushing_tds": "rushing_touchdowns",
+        "receiving_tds": "receiving_touchdowns",
+    })
+
+
 @lru_cache(maxsize=8)
 def load_pbp(season: int) -> pd.DataFrame:
     """Shared play-by-play loader for deep-target-share, red-zone-share,
@@ -593,8 +655,10 @@ def build_enrichment_lookup(
     injury_week: Optional[int] = None,
     coordinator_csv_path: Optional[Path] = None,
     game_script_week: Optional[int] = None,
+    key_by: str = "yahoo_id",
 ) -> Dict[str, dict]:
-    """Build a ``{yahoo_id: {...enrichment fields...}}`` lookup for one season.
+    """Build a ``{yahoo_id: {...enrichment fields...}}`` lookup for one season
+    (or ``{gsis_id: {...}}`` if ``key_by="player_id"`` -- see that arg below).
 
     Args:
         season: NFL season year (e.g. 2024). During a season, this is
@@ -607,6 +671,12 @@ def build_enrichment_lookup(
         game_script_week: Week to pull Vegas game-script context for.
             Defaults (via ``build_game_script_lookup``) to the next
             upcoming game.
+        key_by: ``"yahoo_id"`` (default, for joining onto real Yahoo
+            player data -- only ~half of rostered players have one) or
+            ``"player_id"`` (nflverse's own gsis ID, covering EVERY
+            rostered player with zero Yahoo dependency -- see
+            ``build_draft_board_pool()``, built for pre-draft research
+            while Yahoo API access is still pending).
     """
     rosters = load_seasonal_rosters(season)
     draft_picks = load_draft_picks(season)
@@ -641,8 +711,9 @@ def build_enrichment_lookup(
     ppg_by_gsis = weekly.groupby("player_id")["fantasy_points"].mean().to_dict()
 
     lookup: Dict[str, dict] = {}
-    for _, row in rosters.dropna(subset=["yahoo_id"]).iterrows():
-        yahoo_id = str(row["yahoo_id"])
+    roster_rows = rosters if key_by == "player_id" else rosters.dropna(subset=["yahoo_id"])
+    for _, row in roster_rows.iterrows():
+        key = row["player_id"] if key_by == "player_id" else str(row["yahoo_id"])
         gsis_id = row["player_id"]
         team = _normalize_team_abbr(row.get("team"))
         injury_opp = injury_opportunity_by_gsis.get(gsis_id, {})
@@ -654,7 +725,7 @@ def build_enrichment_lookup(
         ngs_pass = ngs_passing_by_gsis.get(gsis_id, {})
         weather = weather_by_team.get(team, {})
 
-        lookup[yahoo_id] = {
+        lookup[key] = {
             "is_rookie": bool(row.get("rookie_year") == season),
             "draft_capital": draft_by_gsis.get(gsis_id),
             "target_share": target_share_by_gsis.get(gsis_id),
@@ -710,17 +781,25 @@ def enrich_players_dataframe(
     injury_week: Optional[int] = None,
     coordinator_csv_path: Optional[Path] = None,
     game_script_week: Optional[int] = None,
+    key_by: str = "yahoo_id",
 ) -> pd.DataFrame:
-    """Fill in every field listed in ``ENRICHMENT_FIELDS`` on a Yahoo
-    players DataFrame (as produced by ``api/player_mapper.py``), using
-    nflverse data joined via the ``yahoo_id`` crosswalk (plus a manual
-    coordinator-change CSV, if present -- see
-    ``load_manual_coordinator_changes()``).
+    """Fill in every field listed in ``ENRICHMENT_FIELDS`` on a players
+    DataFrame (as produced by ``api/player_mapper.py``, or
+    ``build_draft_board_pool()``'s Yahoo-independent pool), using
+    nflverse data (plus a manual coordinator-change CSV, if present --
+    see ``load_manual_coordinator_changes()``).
+
+    Args:
+        key_by: Passed straight through to ``build_enrichment_lookup()``
+            -- ``"yahoo_id"`` (default) expects ``players_df["player_id"]``
+            to hold Yahoo's player_id (yfpy's convention); ``"player_id"``
+            expects it to hold nflverse's own gsis ID instead (what
+            ``build_draft_board_pool()`` populates it with).
 
     Players whose ``player_id`` has no match in that crosswalk are left
     with whatever defaults they already had (see module docstring).
     """
-    lookup = build_enrichment_lookup(season, through_week, injury_week, coordinator_csv_path, game_script_week)
+    lookup = build_enrichment_lookup(season, through_week, injury_week, coordinator_csv_path, game_script_week, key_by)
     df = players_df.copy()
 
     for field in ENRICHMENT_FIELDS:
@@ -732,3 +811,76 @@ def enrich_players_dataframe(
         )
 
     return df
+
+
+# --- Draft Board (zero Yahoo dependency) -------------------------------
+DRAFT_BOARD_POSITIONS = ("QB", "RB", "WR", "TE")
+_DRAFT_BOARD_STAT_KEYS = (
+    "passing_yards", "passing_touchdowns", "interceptions", "rushing_yards", "rushing_touchdowns",
+    "receptions", "receiving_yards", "receiving_touchdowns", "two_point_conversions", "fumbles_lost",
+)
+
+
+def build_draft_board_pool(season: int, positions: tuple = DRAFT_BOARD_POSITIONS) -> pd.DataFrame:
+    """A full draft-day player pool -- every real skill-position player
+    rostered in `season`, with last season's actual production (ready
+    for `calculate_custom_value()` to score under THIS league's own
+    weights, not nfl_data_py's PPR-flavored default) plus every
+    enrichment signal this project already computes -- built with ZERO
+    Yahoo dependency, keyed entirely by nflverse's own gsis `player_id`
+    (see `enrich_players_dataframe(..., key_by="player_id")`).
+
+    Built for pre-draft research while Yahoo API access is pending. This
+    is NOT a synthetic projection for the upcoming season -- no real
+    projections feed is connected (see README's "paid services" notes on
+    FantasyPros). It's last season's real, actual performance under your
+    league's scoring, adjusted by real signals about what's changed since
+    (new offensive coordinators, coaching changes, injury-opened
+    opportunity, rookie draft capital for players who had no NFL stats
+    yet). Treat it as a serious, defensible starting point for ranking
+    players -- not a finished cheat sheet that already knows about
+    every offseason move (e.g. it can't model a free-agent signing
+    changing a target competition -- see this module's docstring on that
+    exact gap).
+
+    Rookies with real draft capital but no NFL stats yet are still
+    included, all-zero stats and all -- their signal here is
+    `draft_capital` alone, which is exactly what `apply_rookie_bump()`
+    is built to use.
+    """
+    rosters = load_seasonal_rosters(season)
+    rosters = rosters[rosters["position"].isin(positions)].drop_duplicates(subset=["player_id"])
+
+    stat_totals = load_season_stat_totals(season).set_index("player_id")
+
+    rows = []
+    for _, row in rosters.iterrows():
+        gsis_id = row["player_id"]
+        player_stats = stat_totals.loc[gsis_id] if gsis_id in stat_totals.index else None
+        stats_dict = {
+            key: float(player_stats[key]) if player_stats is not None else 0.0
+            for key in _DRAFT_BOARD_STAT_KEYS
+        }
+
+        rows.append({
+            "player_key": f"nflverse.{gsis_id}",
+            "player_id": gsis_id,
+            "name": {
+                "full": row.get("player_name") or gsis_id,
+                "first": row.get("first_name") or "",
+                "last": row.get("last_name") or "",
+            },
+            "editorial_team_abbr": _normalize_team_abbr(row.get("team")),
+            "display_position": row["position"],
+            "eligible_positions": [{"position": row["position"]}],
+            "status": "",
+            "percent_owned": None,
+            "percent_owned_delta": None,
+            "stats": stats_dict,
+            "projected_points_by_week": {},
+        })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    return enrich_players_dataframe(df, season, key_by="player_id")

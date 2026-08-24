@@ -84,19 +84,20 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
   matching) so `build_priority_board()` can join a mover's context notes
   onto the right Yahoo player.
 - `ui/` — Streamlit dashboard
-  - `dashboard.py` — 12-tab dashboard. **Priority Board** (see below) is
+  - `dashboard.py` — 13-tab dashboard. **Priority Board** (see below) is
     first; then League Optimizer, Rookie Radar, QB Konami Code, IR Stash
     Targets, WR3 Floor Finder, Breakout Radar, **TE Difference-Makers**,
     **O-Line Power Rankings**, **Team Change Impact**, **Free Agent
-    Suggestions**, and **Trade Finder** (see "Free Agent Suggestions &
-    Trade Finder" below). A sidebar toggle switches between mock data
-    and live Yahoo data; O-Line Power Rankings/Team Change Impact (plus
-    Priority Board's O-Line/Team Change context) work with zero Yahoo
-    access — pure `nfl_data_py`. Every tab's table is styled via
-    `_style_table()` to match the blue theme (`.streamlit/config.toml`):
-    light zebra-striped row banding plus a blue-intensity gradient
-    (darker = better) on that tab's key ranking column, hand-interpolated
-    between the theme's two blues rather than pulling in matplotlib.
+    Suggestions**, **Trade Finder** (see "Free Agent Suggestions & Trade
+    Finder" below), and **Draft Board** (see below). A sidebar toggle
+    switches between mock data and live Yahoo data; O-Line Power
+    Rankings/Team Change Impact/**Draft Board** (plus Priority Board's
+    O-Line/Team Change context) work with zero Yahoo access — pure
+    `nfl_data_py`. Every tab's table is styled via `_style_table()` to
+    match the blue theme (`.streamlit/config.toml`): light zebra-striped
+    row banding plus a blue-intensity gradient (darker = better) on that
+    tab's key ranking column, hand-interpolated between the theme's two
+    blues rather than pulling in matplotlib.
 
 ### Priority Board
 
@@ -180,6 +181,43 @@ starting slots to fill; it has a real **need** when the opposite is true
   keeper/dynasty considerations, or plain stubbornness. Treat every
   suggestion as a conversation starter to evaluate yourself, never a
   trade either side is guaranteed to accept.
+
+### Draft Board
+
+Built specifically for pre-draft research while Yahoo API access is
+pending approval: unlike every other player-level tab, **Draft Board**
+needs zero Yahoo access at all — pure `nfl_data_py`, same as O-Line Power
+Rankings/Team Change Impact — because a draft doesn't need *your* roster
+or waiver wire, it needs every real player ranked.
+
+`build_draft_board_pool()` (`api/nfl_enrichment.py`) pulls every real
+skill-position (QB/RB/WR/TE) player rostered that season, their actual
+season stat totals (via a new `load_season_stat_totals()` loader — real
+nfl_data_py column names confirmed directly, not guessed), and every
+enrichment signal the rest of this app already computes — then runs the
+result through the exact same `build_priority_board()` blend as the
+Priority Board tab. This required generalizing `build_enrichment_lookup()`/
+`enrich_players_dataframe()` with a `key_by` argument: everywhere else in
+this project keys onto Yahoo's own player IDs (covering only ~half of
+rostered players), but a draft board needs *every* player, so this keys
+by nflverse's own gsis `player_id` instead — zero Yahoo dependency, by
+construction, not just by accident.
+
+**Read this before trusting the rankings**: this is last season's real,
+actual performance under your league's own scoring — not a synthetic
+projection for the upcoming season. No real projections feed is
+connected (see "Additional data sources" → paid services notes on
+FantasyPros below); this is the most defensible free proxy available,
+not a finished cheat sheet that already knows about every offseason
+move (a free-agent signing that changes a target competition, for
+instance, isn't reflected here).
+
+The season selector defaults to `default_stats_season()` (the last
+*completed* season) and automatically falls back one year if nflverse
+hasn't published full weekly stats for it yet — a real, currently-live
+gap as of this writing (`import_weekly_data([2025])` 404s; 2024 and
+earlier work). The fallback shows a clear warning rather than silently
+serving stale-looking data or crashing the tab.
 
 ### A note on season defaults
 

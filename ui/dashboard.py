@@ -1337,6 +1337,73 @@ def render_trade_finder(use_live: bool, credentials: Optional[dict]) -> None:
     st.dataframe(_style_table(display, highlight_col="fit"), use_container_width=True, hide_index=True)
 
 
+def render_draft_board() -> None:
+    """Every real skill-position player, ranked for a snake draft -- see
+    `build_draft_board_pool()`'s docstring in `api/nfl_enrichment.py` for
+    exactly what this is (last season's real performance under this
+    league's own scoring, adjusted by real signals) and isn't (a
+    synthetic projection for the upcoming season). Built with ZERO Yahoo
+    dependency, unlike every other player-level tab -- this is pure
+    `nfl_data_py`, same as O-Line Power Rankings/Team Change Impact."""
+    from api.nfl_enrichment import DRAFT_BOARD_POSITIONS, build_draft_board_pool, default_stats_season
+
+    st.subheader("Draft Board")
+    st.caption(
+        "Every real skill-position player, ranked by last season's actual performance under "
+        "**this league's own scoring** -- not a generic site-wide point total -- adjusted by the "
+        "same real signals as the rest of this app (rookie draft capital, coaching changes, Next "
+        "Gen Stats, Vegas game script, and more; see Priority Board). This is NOT a synthetic "
+        "projection for the upcoming season -- no real projections feed is connected yet (see "
+        "README's \"paid services\" notes) -- it's a serious, defensible starting point for "
+        "ranking players, not a finished cheat sheet that already knows about every offseason "
+        "move. Needs zero Yahoo access, unlike every other player-level tab."
+    )
+
+    season = st.number_input(
+        "Season (last completed season's stats)", min_value=2015, max_value=2035,
+        value=default_stats_season(), step=1, key="draft_board_season",
+    )
+    position_filter = st.multiselect(
+        "Position", options=list(DRAFT_BOARD_POSITIONS), default=list(DRAFT_BOARD_POSITIONS),
+        key="draft_board_position",
+    )
+
+    @st.cache_data(ttl=3600, show_spinner="Building the draft board (every skill-position player, full-season stats)...")
+    def _load(season: int) -> pd.DataFrame:
+        pool = build_draft_board_pool(season)
+        return build_priority_board(pool)
+
+    try:
+        board = _load(int(season))
+    except Exception as exc:
+        fallback_season = int(season) - 1
+        st.warning(
+            f"Couldn't build the draft board for {int(season)} ({exc}) -- nflverse likely hasn't "
+            f"published full weekly stats for that season yet (a known, real gap as of this "
+            f"writing). Falling back to {fallback_season}.",
+            icon="⚠️",
+        )
+        try:
+            board = _load(fallback_season)
+        except Exception as exc2:
+            st.error(f"Couldn't build the draft board for {fallback_season} either ({exc2}).", icon="🚫")
+            return
+
+    board = _with_display_name(board)
+    filtered = board[board["display_position"].isin(position_filter)]
+    if filtered.empty:
+        st.info("No players match the selected position filter.")
+        return
+
+    display = filtered[
+        ["player_name", "editorial_team_abbr", "display_position", "priority_score",
+         "priority_signals", "priority_cautions"]
+    ].rename(columns={"editorial_team_abbr": "team", "display_position": "pos"})
+    display["priority_signals"] = display["priority_signals"].apply(lambda s: " | ".join(s) if s else "")
+    display["priority_cautions"] = display["priority_cautions"].apply(lambda s: " | ".join(s) if s else "")
+    st.dataframe(_style_table(display, highlight_col="priority_score"), use_container_width=True, hide_index=True)
+
+
 def main() -> None:
     from api.nfl_enrichment import default_stats_season
 
@@ -1417,7 +1484,7 @@ def main() -> None:
         )
         players_df = build_mock_players_df()
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs(
         [
             "Priority Board",
             "League Optimizer",
@@ -1431,6 +1498,7 @@ def main() -> None:
             "Team Change Impact",
             "Free Agent Suggestions",
             "Trade Finder",
+            "Draft Board",
         ]
     )
     with tab1:
@@ -1457,6 +1525,8 @@ def main() -> None:
         render_free_agent_suggestions(players_df, use_live=(data_source == "Live Yahoo data"), credentials=credentials)
     with tab12:
         render_trade_finder(use_live=(data_source == "Live Yahoo data"), credentials=credentials)
+    with tab13:
+        render_draft_board()
 
 
 if __name__ == "__main__":
