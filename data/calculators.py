@@ -64,14 +64,19 @@ BACK_HALF_START_WEEK = 10
 
 # Fallback custom scoring weights, used only if the caller doesn't pass its
 # own `scoring_settings` (normally pulled live from
-# `YahooAuthManager().get_league_settings()`).
+# `YahooAuthManager().get_league_settings()`). Set to this league's real
+# format: standard (non-PPR) scoring, no bonus categories -- confirmed
+# directly by the league's owner. `interceptions` is Yahoo's commonly-cited
+# out-of-the-box standard default (-1); double check this specific number
+# against your league's actual Settings > Scoring page once you have live
+# access, since it's the one value here that wasn't explicitly confirmed.
 DEFAULT_SCORING_SETTINGS: Dict[str, float] = {
     "passing_yards": 0.04,
     "passing_touchdowns": 4,
-    "interceptions": -2,
+    "interceptions": -1,
     "rushing_yards": 0.1,
     "rushing_touchdowns": 6,
-    "receptions": 1,          # full-PPR
+    "receptions": 0,          # standard scoring -- no PPR
     "receiving_yards": 0.1,
     "receiving_touchdowns": 6,
     "two_point_conversions": 2,

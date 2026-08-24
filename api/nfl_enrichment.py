@@ -115,9 +115,13 @@ def load_draft_picks(season: int) -> pd.DataFrame:
 def load_weekly_data(season: int) -> pd.DataFrame:
     import nfl_data_py as nfl
 
+    # `fantasy_points` (not `fantasy_points_ppr`) -- this league scores
+    # standard, not PPR, so the flat rest-of-season baseline in
+    # estimate_projected_points_by_week() shouldn't credit a full point
+    # per reception it wouldn't actually score.
     return nfl.import_weekly_data(
         [season],
-        columns=["player_id", "player_display_name", "recent_team", "week", "position", "target_share", "fantasy_points_ppr"],
+        columns=["player_id", "player_display_name", "recent_team", "week", "position", "target_share", "fantasy_points"],
     )
 
 
@@ -468,7 +472,7 @@ def build_qb_year2_regression_flags(season: int) -> Dict[str, dict]:
     rosters_prior = load_seasonal_rosters(prior_season)
     weekly_prior = load_weekly_data(prior_season)
 
-    qb_ppg = weekly_prior[weekly_prior["position"] == "QB"].groupby("player_id")["fantasy_points_ppr"].mean()
+    qb_ppg = weekly_prior[weekly_prior["position"] == "QB"].groupby("player_id")["fantasy_points"].mean()
     top_n_gsis = set(qb_ppg.sort_values(ascending=False).head(QB_YEAR2_REGRESSION_TOP_N).index)
 
     rookie_qbs_prior_year = rosters_prior[
@@ -521,7 +525,7 @@ def build_enrichment_lookup(
         for _, row in draft_picks.dropna(subset=["gsis_id"]).iterrows()
     }
     target_share_by_gsis = weekly.groupby("player_id")["target_share"].mean().to_dict()
-    ppg_by_gsis = weekly.groupby("player_id")["fantasy_points_ppr"].mean().to_dict()
+    ppg_by_gsis = weekly.groupby("player_id")["fantasy_points"].mean().to_dict()
 
     lookup: Dict[str, dict] = {}
     for _, row in rosters.dropna(subset=["yahoo_id"]).iterrows():
