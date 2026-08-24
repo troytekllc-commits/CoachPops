@@ -116,9 +116,13 @@ RETRACTABLE_ROOF_USUALLY_CLOSED = {"HOU", "IND", "ATL", "ARI", "LV", "DAL"}
 
 
 def _load_api_key() -> Optional[str]:
-    """``OPENWEATHERMAP_API_KEY`` env var first, else an optional
-    ``"openweathermap_api_key"`` field in ``private.json``. Returns None
-    (never raises) if neither is set or private.json can't be read."""
+    """``OPENWEATHERMAP_API_KEY`` env var first, then an optional
+    ``"openweathermap_api_key"`` field in ``private.json``, then (for a
+    hosted deployment with no local filesystem to speak of, e.g. Streamlit
+    Community Cloud) Streamlit's own secrets manager. Returns None (never
+    raises) if none of the three are set or readable -- this module has no
+    hard dependency on Streamlit; the import is local to this branch so a
+    plain CLI/script context (no Streamlit installed active) never breaks."""
     env_key = os.environ.get("OPENWEATHERMAP_API_KEY")
     if env_key:
         return env_key
@@ -132,6 +136,15 @@ def _load_api_key() -> Optional[str]:
                 return key
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Couldn't read private.json for a weather API key: %s", exc)
+
+    try:
+        import streamlit as st
+
+        key = st.secrets.get("openweathermap_api_key")
+        if key:
+            return key
+    except Exception:
+        pass  # not running under Streamlit, or no secrets.toml configured -- not an error
 
     return None
 

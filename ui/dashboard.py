@@ -19,6 +19,8 @@ interactive browser OAuth handshake belongs, not inside a Streamlit rerun.
 
 from __future__ import annotations
 
+import json
+import logging
 import sys
 from pathlib import Path
 from typing import Optional
@@ -26,6 +28,8 @@ from typing import Optional
 import altair as alt
 import pandas as pd
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
@@ -1017,9 +1021,43 @@ def render_priority_board(players_df: pd.DataFrame) -> None:
     st.dataframe(_style_table(display, highlight_col="priority_score"), use_container_width=True, hide_index=True)
 
 
-def load_live_players_df(count_limit: int, enrich: bool, season: int) -> pd.DataFrame:
+def _yahoo_credentials_from_secrets() -> Optional[dict]:
+    """For a hosted deployment (e.g. Streamlit Community Cloud) with no
+    `private.json` file on disk at all: paste the exact same JSON you'd
+    put in `private.json` locally into the deployed app's Secrets, under
+    a single `private_json` key (a raw JSON string, not a TOML table --
+    avoids any TOML-nesting gymnastics for the `access_token` sub-dict).
+    See README's "Deploying" section for the exact format.
+
+    Returns None (never raises) if unset, invalid, or Streamlit secrets
+    aren't configured at all (e.g. running locally with no
+    `.streamlit/secrets.toml`) -- this is an optional, additional
+    credential source, not a required one.
+    """
+    try:
+        raw = st.secrets.get("private_json")
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning("Couldn't parse the 'private_json' secret as JSON: %s", exc)
+        return None
+
+
+def load_live_players_df(
+    count_limit: int, enrich: bool, season: int, credentials: Optional[dict] = None
+) -> pd.DataFrame:
     """Pull real waiver-wire players via YahooAuthManager + player_mapper,
     optionally backfilled with nfl_data_py via nfl_enrichment.
+
+    Args:
+        credentials: Passed straight through to `YahooAuthManager` --
+            when given (from `_yahoo_credentials_from_secrets()`, on a
+            hosted deployment with no `private.json` file), skips reading
+            a local file entirely.
 
     Raises whatever YahooAuthManager/player_mapper raises (missing
     private.json, auth failure, etc.) -- the caller in main() decides how
@@ -1028,7 +1066,7 @@ def load_live_players_df(count_limit: int, enrich: bool, season: int) -> pd.Data
     from api.player_mapper import build_players_dataframe
     from api.yahoo_auth import YahooAuthManager
 
-    auth = YahooAuthManager()
+    auth = YahooAuthManager(credentials=credentials) if credentials else YahooAuthManager()
     free_agents = auth.get_waiver_wire_players(count_limit=count_limit)
     return build_players_dataframe(
         auth, free_agents, count_limit=count_limit, enrich=enrich, season=season
@@ -1042,6 +1080,8 @@ def main() -> None:
     st.title("🏈 CoachPops Fantasy Football Manager")
 
     private_json_exists = (PROJECT_ROOT / "private.json").is_file()
+    secrets_credentials = _yahoo_credentials_from_secrets()
+    yahoo_available = private_json_exists or secrets_credentials is not None
 
     with st.sidebar:
         st.header("Data source")
@@ -1049,8 +1089,8 @@ def main() -> None:
             "Waiver wire data",
             options=["Mock data", "Live Yahoo data"],
             index=0,
-            disabled=not private_json_exists,
-            help=None if private_json_exists else "Create private.json first (see README).",
+            disabled=not yahoo_available,
+            help=None if yahoo_available else "Create private.json first (see README).",
         )
         live_count_limit = st.slider(
             "Players to fetch (live only)", min_value=5, max_value=100, value=25, step=5,
@@ -1072,7 +1112,13 @@ def main() -> None:
     if data_source == "Live Yahoo data":
         try:
             with st.spinner("Fetching live waiver wire data from Yahoo..."):
-                players_df = load_live_players_df(live_count_limit, enrich_with_nfl_data, int(nfl_season))
+                # A local private.json file always wins if present (matches
+                # local-dev expectations); secrets are the fallback for a
+                # hosted deployment with no such file at all.
+                credentials = None if private_json_exists else secrets_credentials
+                players_df = load_live_players_df(
+                    live_count_limit, enrich_with_nfl_data, int(nfl_season), credentials=credentials
+                )
             st.success("Connected to Yahoo -- showing live waiver wire data.", icon="✅")
             if enrich_with_nfl_data:
                 st.caption(

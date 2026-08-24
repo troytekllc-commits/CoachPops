@@ -112,9 +112,27 @@ DEFAULT_PRIVATE_JSON_PATH = PROJECT_ROOT / "private.json"
 class YahooAuthManager:
     """Owns the ``private.json`` credential file and a yfpy query client."""
 
-    def __init__(self, private_json_path: Union[str, Path] = DEFAULT_PRIVATE_JSON_PATH):
+    def __init__(
+        self,
+        private_json_path: Union[str, Path] = DEFAULT_PRIVATE_JSON_PATH,
+        credentials: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Args:
+            private_json_path: Where to read/persist credentials from a
+                local file (the normal, local-run path).
+            credentials: Pass credentials directly instead of reading
+                `private_json_path` -- for a hosted deployment (e.g.
+                Streamlit Community Cloud) where credentials live in
+                `st.secrets` instead of a file on disk (see
+                `ui/dashboard.py`'s `main()`, which builds this dict from
+                `st.secrets` when `private.json` doesn't exist). Refreshed
+                tokens are still persisted to `private_json_path` either
+                way -- on a host with an ephemeral filesystem that just
+                means the cache doesn't survive a restart, not an error.
+        """
         self.private_json_path = Path(private_json_path)
-        self._credentials: Dict[str, Any] = self._load_private_json()
+        self._credentials: Dict[str, Any] = dict(credentials) if credentials is not None else self._load_private_json()
         self._query: Optional[YahooFantasySportsQuery] = None
 
     # ------------------------------------------------------------------

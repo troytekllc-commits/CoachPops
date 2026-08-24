@@ -265,6 +265,58 @@ checkbox off to see Yahoo-only data instead, in which case only **League
 Optimizer** and **QB Konami Code** will show results (Breakout Radar can
 still fire on Yahoo's own `percent_owned` data alone).
 
+## Deploying (Streamlit Community Cloud)
+
+Running `streamlit run app.py` locally works, but only while that terminal
+stays open on your machine. To get a real URL you (or anyone) can open
+anytime, deploy to [Streamlit Community Cloud](https://share.streamlit.io)
+— free, and built for exactly this kind of project:
+
+1. Go to https://share.streamlit.io and sign in with GitHub (the same
+   account this repo is under).
+2. Click **"New app"**, then pick:
+   - Repository: `troytekllc-commits/CoachPops`
+   - Branch: `claude/fantasy-football-dashboard-4buwpp`
+   - Main file path: `app.py`
+3. Click **Deploy**. Streamlit installs `requirements.txt` and starts the
+   app automatically — this part needs no code changes, it's already set
+   up to run this way.
+
+That gets you a working URL immediately, showing **mock data** (there's no
+`private.json` on the deployed server, and there never will be — it's
+gitignored on purpose, see the Yahoo credentials section above). Two tabs
+(**O-Line Power Rankings**, **Team Change Impact**) and most of
+**Priority Board**'s context work fully live at this point, with zero
+extra setup, since they don't need Yahoo at all.
+
+### Adding your Yahoo/weather credentials to the deployed app
+
+A hosted server has no local filesystem to put a `private.json` file on,
+so credentials go through Streamlit's own **Secrets** manager instead
+(Settings → Secrets, in your deployed app's dashboard) — `api/yahoo_auth.py`
+and `api/weather.py` both check for this automatically (via `st.secrets`)
+whenever there's no local `private.json` file, no code changes needed.
+
+Paste in:
+
+```toml
+openweathermap_api_key = "your-openweathermap-key"
+
+private_json = """
+{"consumer_key": "...", "consumer_secret": "...", "league_id": "...", "game_code": "nfl", "game_id": null, "redirect_uri": "https://localhost:8080", "access_token": {...}}
+"""
+```
+
+The `private_json` value is a raw JSON string (in a TOML triple-quoted
+block) — literally the exact same content you'd put in a local
+`private.json` file, `access_token` and all. That's deliberate: the Yahoo
+OAuth browser handshake (`scripts/yahoo_login.py`) needs a real terminal
+and browser to complete, which a hosted server doesn't have — so run it
+**locally first** to get a working `access_token`, then copy your whole
+local `private.json`'s contents into this one secret. Once both secrets
+are set, redeploy (or just wait for the app to pick up the change) and
+the "Live Yahoo data" option becomes available on the hosted app too.
+
 ### Additional data sources
 
 Beyond Yahoo and nflverse's core stats, four more real (non-mock) data
