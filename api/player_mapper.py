@@ -269,3 +269,69 @@ def build_players_dataframe(
             logger.warning("Couldn't fetch Sleeper trending data (skipping): %s", exc)
 
     return df
+
+
+def build_league_rosters_dataframe(
+    auth: YahooAuthManager,
+    enrich: bool = True,
+    season: Optional[int] = None,
+    through_week: Optional[int] = None,
+) -> pd.DataFrame:
+    """Every team's current roster in the league, as one DataFrame with a
+    `team_id` column added -- what Free Agent Suggestions and Trade
+    Finder need (see `data/calculators.py`'s `assess_team_needs()`/
+    `find_trade_candidates()`) to compare rosters across the whole
+    league, not just the waiver wire `build_players_dataframe()` covers.
+
+    NOT YET VERIFIED AGAINST A LIVE LEAGUE -- Yahoo API access was still
+    pending approval as of writing this. Every yfpy attribute this
+    function reads (`Roster.players`, `Team.team_id`,
+    `Team.is_owned_by_current_login`) was confirmed directly against
+    yfpy's own installed source (`inspect.getsource`), not guessed at --
+    but the actual live API response shape (auth flow, pagination,
+    rate limits under a real league's size) has not been smoke-tested
+    end to end. Treat the first real run against your league as a test,
+    not a known-working path.
+
+    Args:
+        enrich / season / through_week: Same meaning as in
+            `build_players_dataframe()` -- backfills nfl_data_py fields
+            per player once mapped.
+
+    Returns:
+        pd.DataFrame: One row per rostered player, every column
+        `build_players_dataframe()` produces plus `team_id` and
+        `team_name`. Also has a `my_team_id` attribute set on the
+        returned DataFrame (`df.attrs["my_team_id"]`) identifying which
+        `team_id` belongs to the authenticated user, via yfpy's own
+        `is_owned_by_current_login` flag -- never guessed at by name
+        matching.
+    """
+    stat_id_map = build_stat_id_name_map(auth.get_league_settings())
+
+    teams = auth.query.get_league_teams()
+    my_team_id = next(
+        (team.team_id for team in teams if getattr(team, "is_owned_by_current_login", 0)), None
+    )
+    team_names = {team.team_id: getattr(team, "name", str(team.team_id)) for team in teams}
+
+    rosters = auth.get_rosters()  # {team_id: Roster}, every team
+
+    rows = []
+    for team_id, roster in rosters.items():
+        for player in getattr(roster, "players", []) or []:
+            row = player_to_row(player, stat_id_map)
+            row["team_id"] = team_id
+            row["team_name"] = team_names.get(team_id, str(team_id))
+            rows.append(row)
+
+    template_columns = list(player_to_row(object(), stat_id_map).keys()) + ["team_id", "team_name"]
+    df = pd.DataFrame(rows, columns=template_columns)
+
+    if enrich and not df.empty:
+        from api.nfl_enrichment import default_stats_season, enrich_players_dataframe
+
+        df = enrich_players_dataframe(df, season or default_stats_season(), through_week)
+
+    df.attrs["my_team_id"] = my_team_id
+    return df

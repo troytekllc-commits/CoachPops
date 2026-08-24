@@ -35,16 +35,160 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 from data.calculators import (  # noqa: E402
+    DEFAULT_ROSTER_REQUIREMENTS,
     DEFAULT_SCORING_SETTINGS,
     apply_rookie_bump,
+    assess_team_needs,
     build_priority_board,
     calculate_custom_value,
     calculate_qb_floor,
+    compute_replacement_level,
     evaluate_wr_scarcity,
     find_breakout_signals,
+    find_free_agent_upgrades,
     find_ir_stashes,
     find_te_difference_makers,
+    find_trade_candidates,
 )
+
+
+# --- Mock league (Free Agent Suggestions & Trade Finder) -------------------
+# Both features need EVERY team's roster, not just the waiver-wire pool
+# build_mock_players_df() provides -- something only real Yahoo access can
+# give (via get_rosters() for every team_id), so this generates a
+# procedural mock league instead. Deliberately procedural rather than
+# hand-authored personas like build_mock_players_df()'s single pool:
+# hand-writing ~10 full rosters would dwarf the actual feature code, and
+# these two calculators care about relative team strength per position,
+# not any one player's story.
+MOCK_LEAGUE_NUM_TEAMS = 10
+MOCK_LEAGUE_MY_TEAM_ID = "team_1"
+MOCK_LEAGUE_TEAM_NAMES = [
+    "Gridiron Gurus", "Waiver Wizards", "Blitz Brigade", "End Zone Elites",
+    "Fantasy Fanatics", "Touchdown Titans", "Playoff Predators", "Redzone Raiders",
+    "Comeback Kids", "Dynasty Dominators",
+]
+MOCK_LEAGUE_ROSTER_COUNTS = {"QB": 2, "RB": 4, "WR": 5, "TE": 2}
+
+# Per-position, per-tier baseline stat lines (tier 0 = best on a team at
+# that position, descending). Deliberately simple and monotonic -- this
+# is demo data to exercise the need/surplus/trade-matching logic, not
+# meant to resemble any real player.
+_MOCK_LEAGUE_TIER_STATS = {
+    "QB": [
+        {"passing_yards": 4200, "passing_touchdowns": 32, "interceptions": 9, "rushing_yards": 250, "rushing_touchdowns": 3},
+        {"passing_yards": 3300, "passing_touchdowns": 20, "interceptions": 12, "rushing_yards": 80, "rushing_touchdowns": 1},
+    ],
+    "RB": [
+        {"rushing_yards": 1300, "rushing_touchdowns": 11, "receptions": 40, "receiving_yards": 350},
+        {"rushing_yards": 950, "rushing_touchdowns": 7, "receptions": 30, "receiving_yards": 220},
+        {"rushing_yards": 600, "rushing_touchdowns": 4, "receptions": 20, "receiving_yards": 150},
+        {"rushing_yards": 300, "rushing_touchdowns": 2, "receptions": 10, "receiving_yards": 70},
+    ],
+    "WR": [
+        {"receptions": 90, "receiving_yards": 1250, "receiving_touchdowns": 9},
+        {"receptions": 70, "receiving_yards": 950, "receiving_touchdowns": 6},
+        {"receptions": 55, "receiving_yards": 700, "receiving_touchdowns": 4},
+        {"receptions": 35, "receiving_yards": 450, "receiving_touchdowns": 2},
+        {"receptions": 20, "receiving_yards": 250, "receiving_touchdowns": 1},
+    ],
+    "TE": [
+        {"receptions": 65, "receiving_yards": 800, "receiving_touchdowns": 7},
+        {"receptions": 30, "receiving_yards": 320, "receiving_touchdowns": 2},
+    ],
+}
+_STAT_KEYS = (
+    "passing_yards", "passing_touchdowns", "interceptions", "rushing_yards", "rushing_touchdowns",
+    "receptions", "receiving_yards", "receiving_touchdowns", "two_point_conversions", "fumbles_lost",
+)
+# Every enrichment field build_priority_board()'s underlying calculators
+# check for -- defaulted to None/False here (no enrichment story for this
+# mock league; team strength comes entirely from the tier-based stats
+# above, which is the axis Free Agent Suggestions/Trade Finder actually
+# care about) so nothing downstream hits a missing-column KeyError.
+_MOCK_LEAGUE_ENRICHMENT_DEFAULTS = {
+    "is_rookie": False, "draft_capital": None, "target_share": None, "deep_target_share": None,
+    "red_zone_share": None, "te_snap_share": None, "team_pass_rate": None, "team_pass_epa": None,
+    "game_script_spread": None, "game_script_total": None, "game_script_implied_team_total": None,
+    "ngs_separation": None, "ngs_yac_above_expectation": None, "ngs_time_to_throw": None, "ngs_cpoe": None,
+    "game_wind_mph": None, "game_precip_probability": None, "game_is_dome": None, "sleeper_trending_adds": None,
+    "injury_opportunity": False, "injury_opportunity_ahead_player": None, "injury_opportunity_ahead_status": None,
+    "team_new_head_coach": False, "team_head_coach_name": None, "team_new_offensive_coordinator": False,
+    "team_offensive_coordinator_name": None, "qb_year2_regression_caution": False, "qb_year1_ppg": None,
+    "percent_owned": None, "percent_owned_delta": None,
+}
+
+
+def build_mock_league_rosters(num_teams: int = MOCK_LEAGUE_NUM_TEAMS, seed: int = 42) -> pd.DataFrame:
+    """A full mock league -- `num_teams` teams, each with a roster -- for
+    exercising Free Agent Suggestions and Trade Finder. `MOCK_LEAGUE_MY_TEAM_ID`
+    ("team_1") is always "your" team.
+
+    Team strength is deliberately varied by shuffling each team's tier
+    assignment per position with a fixed seed (reproducible across
+    reruns -- not a different mock league every time the page loads), so
+    some teams end up positionally stacked and others thin, giving the
+    need/surplus matching something real to find.
+    """
+    import random
+
+    rng = random.Random(seed)
+    rows = []
+    player_counter = 0
+
+    # Deliberate imbalance for team_1 ("your" team) and team_2, so Free
+    # Agent Suggestions/Trade Finder have a guaranteed, clear scenario to
+    # find -- with every team drawing the same roster COUNTS from the
+    # same tier pool, a pure random shuffle clusters every team's surplus/
+    # need within about +/-0.5 of neutral (confirmed while testing this),
+    # rarely producing the kind of clear two-way fit worth demoing. team_1
+    # is RB-stacked/WR-thin; team_2 is the mirror image (WR-stacked/
+    # RB-thin) -- a textbook complementary trade. Every other team still
+    # uses the random shuffle below for variety.
+    tier_overrides = {
+        MOCK_LEAGUE_MY_TEAM_ID: {"RB": [0, 0, 1, 1], "WR": [3, 4, 4, 4, 4]},
+        "team_2": {"RB": [3, 3, 3, 2], "WR": [0, 0, 1, 1, 1]},
+    }
+
+    for team_num in range(1, num_teams + 1):
+        team_id = f"team_{team_num}"
+        team_name = MOCK_LEAGUE_TEAM_NAMES[(team_num - 1) % len(MOCK_LEAGUE_TEAM_NAMES)]
+
+        for position, count in MOCK_LEAGUE_ROSTER_COUNTS.items():
+            forced_tiers = tier_overrides.get(team_id, {}).get(position)
+            if forced_tiers:
+                tiers = forced_tiers
+            else:
+                tiers = list(range(len(_MOCK_LEAGUE_TIER_STATS[position])))
+                rng.shuffle(tiers)  # this team's players don't all land in tier order
+            for slot in range(count):
+                player_counter += 1
+                tier = tiers[slot % len(tiers)]
+                jitter = rng.uniform(0.85, 1.15)  # a little spread so same-tier players aren't identical
+                stats = {k: round(v * jitter) for k, v in _MOCK_LEAGUE_TIER_STATS[position][tier].items()}
+                for key in _STAT_KEYS:
+                    stats.setdefault(key, 0)
+
+                row = {
+                    "player_key": f"449.p.mock{player_counter}",
+                    "player_id": f"mock{player_counter}",
+                    "team_id": team_id,
+                    "team_name": team_name,
+                    "name": {
+                        "full": f"{team_name.split()[0]} {position}{slot + 1}",
+                        "first": team_name.split()[0], "last": f"{position}{slot + 1}",
+                    },
+                    "editorial_team_abbr": rng.choice(["KC", "SF", "BUF", "PHI", "DAL", "MIA", "DET", "BAL"]),
+                    "display_position": position,
+                    "eligible_positions": [{"position": position}],
+                    "status": "",
+                    "stats": stats,
+                    "projected_points_by_week": {},
+                }
+                row.update(_MOCK_LEAGUE_ENRICHMENT_DEFAULTS)
+                rows.append(row)
+
+    return pd.DataFrame(rows)
 
 
 def _weekly_projection(early_avg: float, late_avg: float) -> dict:
@@ -1073,6 +1217,126 @@ def load_live_players_df(
     )
 
 
+def _load_league_rosters(use_live: bool, credentials: Optional[dict]):
+    """Returns `(rosters_df, my_team_id)` for Free Agent Suggestions/Trade
+    Finder: live Yahoo rosters (every team, via `api/player_mapper.py`'s
+    `build_league_rosters_dataframe()` -- NOT YET verified against a live
+    league, see that function's docstring) when `use_live`, else the
+    procedural mock league (`build_mock_league_rosters()`). Any live-fetch
+    failure (or Yahoo not flagging any team as yours) falls back to the
+    mock league with a visible warning, rather than leaving the tab blank.
+    """
+    if not use_live:
+        return build_mock_league_rosters(), MOCK_LEAGUE_MY_TEAM_ID
+
+    from api.player_mapper import build_league_rosters_dataframe
+    from api.yahoo_auth import YahooAuthManager
+
+    try:
+        with st.spinner("Fetching every team's roster from Yahoo..."):
+            auth = YahooAuthManager(credentials=credentials) if credentials else YahooAuthManager()
+            rosters_df = build_league_rosters_dataframe(auth)
+        my_team_id = rosters_df.attrs.get("my_team_id")
+        if my_team_id is None:
+            st.warning(
+                "Couldn't identify your team in the league (Yahoo didn't flag any team as "
+                "yours) -- showing the mock league instead.",
+                icon="⚠️",
+            )
+            return build_mock_league_rosters(), MOCK_LEAGUE_MY_TEAM_ID
+        return rosters_df, my_team_id
+    except Exception as exc:
+        st.error(f"Couldn't fetch live league rosters ({exc}). Showing the mock league instead.", icon="🚫")
+        return build_mock_league_rosters(), MOCK_LEAGUE_MY_TEAM_ID
+
+
+def render_free_agent_suggestions(players_df: pd.DataFrame, use_live: bool, credentials: Optional[dict]) -> None:
+    """Concrete drop/add recommendations, not just a ranked list: for
+    each skill position, compares your weakest rostered player against
+    the best available free agent, using Priority Board's blended
+    `priority_score` for both sides."""
+    st.subheader("Free Agent Suggestions")
+    st.caption(
+        "Compares your weakest rostered player at each position against the best available free "
+        "agent, using the same blended `priority_score` as Priority Board -- a concrete \"drop X, "
+        "add Y\" suggestion, not just free agents ranked in a vacuum with no connection to your "
+        "actual roster. Needs every team's real Yahoo rosters to know what \"your weakest player\" "
+        "actually is; falls back to a mock league until that's live. See `find_free_agent_upgrades()` "
+        "in `data/calculators.py`."
+    )
+
+    league_rosters, my_team_id = _load_league_rosters(use_live, credentials)
+    if not use_live:
+        st.info("Showing a mock league (10 teams) -- switch to \"Live Yahoo data\" in the sidebar for your real roster.")
+
+    my_roster = league_rosters[league_rosters["team_id"] == my_team_id]
+    if my_roster.empty:
+        st.info("Couldn't find your roster in the league data.")
+        return
+
+    min_gain = st.slider(
+        "Minimum priority-score gain to suggest", min_value=0.0, max_value=50.0, value=10.0, step=5.0,
+        help="Higher = only your clearest upgrades; lower = surfaces more marginal ones too.",
+    )
+
+    my_roster_scored = build_priority_board(my_roster)
+    free_agents_scored = build_priority_board(players_df)
+    suggestions = find_free_agent_upgrades(my_roster_scored, free_agents_scored, min_priority_score_gain=min_gain)
+
+    if suggestions.empty:
+        st.info("No free agent clears your minimum gain threshold at any position right now.")
+        return
+
+    display = suggestions.rename(columns={
+        "position": "pos", "drop_player": "drop", "drop_priority_score": "drop score",
+        "add_player": "add", "add_priority_score": "add score", "priority_score_gain": "gain",
+    })
+    st.dataframe(_style_table(display, highlight_col="gain"), use_container_width=True, hide_index=True)
+
+
+def render_trade_finder(use_live: bool, credentials: Optional[dict]) -> None:
+    """Proactively scans every other team for a genuine two-way trade
+    fit with yours: a position where you have surplus and they have a
+    need, paired with a position where they have surplus and you have a
+    need. See `find_trade_candidates()` in `data/calculators.py` for the
+    exact matching logic and its documented limits."""
+    st.subheader("Trade Finder")
+    st.caption(
+        "Scans every other team for a genuine two-way fit: a position where you have surplus "
+        "(tradeable depth) and they have a need, paired with a position where they have surplus "
+        "and you have a need -- not just \"who has a good player.\" This is a value-and-need "
+        "heuristic, not a negotiation: it has no idea whether a manager actually wants to trade, "
+        "their own roster philosophy, or plain stubbornness. Treat every row as a conversation "
+        "starter to evaluate yourself, never a trade either side is guaranteed to accept."
+    )
+
+    league_rosters, my_team_id = _load_league_rosters(use_live, credentials)
+    if not use_live:
+        st.info("Showing a mock league (10 teams) -- switch to \"Live Yahoo data\" in the sidebar for your real league.")
+
+    num_teams = st.number_input(
+        "Number of teams in your league", min_value=4, max_value=20,
+        value=league_rosters["team_id"].nunique(), step=1,
+        help="Used to compute replacement level (see compute_replacement_level()) -- should match your real league size.",
+    )
+
+    board = build_priority_board(league_rosters)
+    trades = find_trade_candidates(
+        my_team_id, board, DEFAULT_ROSTER_REQUIREMENTS, num_teams=int(num_teams)
+    )
+
+    if trades.empty:
+        st.info("No genuine two-way trade fit found with any other team right now.")
+        return
+
+    display = trades.rename(columns={
+        "other_team_id": "team", "you_give": "you give", "you_give_position": "give pos",
+        "you_give_value": "give value", "you_get": "you get", "you_get_position": "get pos",
+        "you_get_value": "get value", "fairness_gap_pct": "fairness gap", "fit_score": "fit",
+    })
+    st.dataframe(_style_table(display, highlight_col="fit"), use_container_width=True, hide_index=True)
+
+
 def main() -> None:
     from api.nfl_enrichment import default_stats_season
 
@@ -1109,13 +1373,15 @@ def main() -> None:
             disabled=data_source != "Live Yahoo data" or not enrich_with_nfl_data,
         )
 
+    # A local private.json file always wins if present (matches local-dev
+    # expectations); secrets are the fallback for a hosted deployment with
+    # no such file at all. Computed once here since Free Agent Suggestions/
+    # Trade Finder need it too, not just the waiver-wire fetch below.
+    credentials = None if private_json_exists else secrets_credentials
+
     if data_source == "Live Yahoo data":
         try:
             with st.spinner("Fetching live waiver wire data from Yahoo..."):
-                # A local private.json file always wins if present (matches
-                # local-dev expectations); secrets are the fallback for a
-                # hosted deployment with no such file at all.
-                credentials = None if private_json_exists else secrets_credentials
                 players_df = load_live_players_df(
                     live_count_limit, enrich_with_nfl_data, int(nfl_season), credentials=credentials
                 )
@@ -1151,7 +1417,7 @@ def main() -> None:
         )
         players_df = build_mock_players_df()
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(
         [
             "Priority Board",
             "League Optimizer",
@@ -1163,6 +1429,8 @@ def main() -> None:
             "TE Difference-Makers",
             "O-Line Power Rankings",
             "Team Change Impact",
+            "Free Agent Suggestions",
+            "Trade Finder",
         ]
     )
     with tab1:
@@ -1185,6 +1453,10 @@ def main() -> None:
         render_oline_rankings()
     with tab10:
         render_team_change_report()
+    with tab11:
+        render_free_agent_suggestions(players_df, use_live=(data_source == "Live Yahoo data"), credentials=credentials)
+    with tab12:
+        render_trade_finder(use_live=(data_source == "Live Yahoo data"), credentials=credentials)
 
 
 if __name__ == "__main__":

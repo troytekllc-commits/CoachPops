@@ -84,18 +84,19 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
   matching) so `build_priority_board()` can join a mover's context notes
   onto the right Yahoo player.
 - `ui/` — Streamlit dashboard
-  - `dashboard.py` — 10-tab dashboard. **Priority Board** (see below) is
+  - `dashboard.py` — 12-tab dashboard. **Priority Board** (see below) is
     first; then League Optimizer, Rookie Radar, QB Konami Code, IR Stash
     Targets, WR3 Floor Finder, Breakout Radar, **TE Difference-Makers**,
-    **O-Line Power Rankings**, and **Team Change Impact**. A sidebar
-    toggle switches between mock data and live Yahoo data; the last two
-    tabs (plus Priority Board's O-Line/Team Change context) work with
-    zero Yahoo access — pure `nfl_data_py`. Every tab's table is styled
-    via `_style_table()` to match the blue theme
-    (`.streamlit/config.toml`): light zebra-striped row banding plus a
-    blue-intensity gradient (darker = better) on that tab's key ranking
-    column, hand-interpolated between the theme's two blues rather than
-    pulling in matplotlib.
+    **O-Line Power Rankings**, **Team Change Impact**, **Free Agent
+    Suggestions**, and **Trade Finder** (see "Free Agent Suggestions &
+    Trade Finder" below). A sidebar toggle switches between mock data
+    and live Yahoo data; O-Line Power Rankings/Team Change Impact (plus
+    Priority Board's O-Line/Team Change context) work with zero Yahoo
+    access — pure `nfl_data_py`. Every tab's table is styled via
+    `_style_table()` to match the blue theme (`.streamlit/config.toml`):
+    light zebra-striped row banding plus a blue-intensity gradient
+    (darker = better) on that tab's key ranking column, hand-interpolated
+    between the theme's two blues rather than pulling in matplotlib.
 
 ### Priority Board
 
@@ -132,6 +133,53 @@ Change context are optional and fetched independently in the dashboard
 layer — a failure in either (e.g. a season nflverse hasn't published
 weekly data for yet) degrades that one context source rather than
 breaking the whole board.
+
+### Free Agent Suggestions & Trade Finder
+
+These two tabs turn every other tab's analysis into concrete actions —
+"add this player, drop that one" / "propose this trade" — instead of
+just rankings you'd still have to act on yourself manually.
+
+Both need every team's roster, not just the waiver wire, to do anything —
+something only live Yahoo access can give (`api/player_mapper.py`'s
+`build_league_rosters_dataframe()`, via `YahooAuthManager.get_rosters()`
+with no `team_id` — fetches every team at once). **This has not yet been
+smoke-tested against a live league** — Yahoo API access was still pending
+approval as of writing this — though every yfpy attribute it reads
+(`Roster.players`, `Team.team_id`, `Team.is_owned_by_current_login`) was
+confirmed directly against yfpy's own installed source, not guessed at.
+Until then (and as an automatic fallback if a live fetch ever fails),
+both tabs run against a procedural 10-team mock league
+(`build_mock_league_rosters()` in `ui/dashboard.py`) — deliberately
+imbalanced (your mock team is RB-stacked/WR-thin; one other team is the
+mirror image) so there's always a real scenario to demonstrate, rather
+than hand-authoring ~10 full rosters by hand.
+
+Both are built on the standard fantasy-analysis idea of **replacement
+level** (`compute_replacement_level()` in `data/calculators.py`): a
+player's value isn't their raw score, it's how far above the point where
+you could just plug in whoever's next-available at that position
+league-wide. A team has real tradeable **surplus** at a position when it
+has more startable (at-or-above-replacement-level) players there than
+starting slots to fill; it has a real **need** when the opposite is true
+(`assess_team_needs()`).
+
+- **Free Agent Suggestions** (`find_free_agent_upgrades()`) compares your
+  weakest rostered player at each position against the best available
+  free agent, using Priority Board's blended `priority_score` for both —
+  a concrete drop/add pair, not free agents ranked with no connection to
+  your actual roster.
+- **Trade Finder** (`find_trade_candidates()`) proactively scans every
+  other team for a genuine two-way fit: a position where you have
+  surplus and they have a need, paired with a position where they have
+  surplus and you have a need — filtered to trades within a fairness
+  tolerance (both traded players' `priority_score`s within ~35% of each
+  other by default). **Read this caveat before trusting a suggestion**:
+  it's a value-and-need heuristic, not a negotiation — it has no idea
+  whether a manager actually wants to trade, their own roster philosophy,
+  keeper/dynasty considerations, or plain stubbornness. Treat every
+  suggestion as a conversation starter to evaluate yourself, never a
+  trade either side is guaranteed to accept.
 
 ### A note on season defaults
 

@@ -102,6 +102,20 @@ DEFAULT_SCORING_SETTINGS: Dict[str, float] = {
     "fumbles_lost": -2,
 }
 
+# This league's real roster construction (confirmed by the league's owner):
+# standard Yahoo roster plus a third starting WR. K/DEF are intentionally
+# left out -- nothing in this project models them (no scoring weights, no
+# calculators), matching the app's existing skill-position-only scope.
+DEFAULT_ROSTER_REQUIREMENTS: Dict[str, int] = {
+    "QB": 1,
+    "RB": 2,
+    "WR": 3,
+    "TE": 1,
+    "FLEX": 1,  # W/R/T -- see _position_demand() for how this gets split
+    "BENCH": 6,
+    "IR": 2,
+}
+
 # Rookies drafted earlier get a bigger bench-stash bump: Day 1 (round 1) and
 # Day 2 (rounds 2-3) picks have far better historical hit rates than Day 3 /
 # undrafted rookies, so their high-variance bench upside is worth more.
@@ -820,3 +834,266 @@ def build_priority_board(
     df["priority_cautions"] = df.apply(merge_cautions, axis=1)
 
     return df.sort_values("priority_score", ascending=False).reset_index(drop=True)
+
+
+# --- Free Agent Suggestions & Trade Finder -----------------------------
+# Everything below needs full-LEAGUE roster data (every team, not just
+# free agents) with a `team_id` column and a `priority_score` column
+# (see `build_priority_board()`) -- these are the two features that only
+# become real once Yahoo API access is live and `get_rosters()` can pull
+# every team, not just the waiver wire. Until then, `ui/dashboard.py`'s
+# `build_mock_league_rosters()` exercises this against a procedurally
+# generated mock league.
+#
+# The core idea, standard fantasy-analysis "replacement level": a
+# player's value isn't their raw score, it's how far above the point
+# where you could just plug in whoever's next-available at that position
+# league-wide. A team has real tradeable SURPLUS at a position when it
+# has more startable (at-or-above-replacement-level) players there than
+# it has starting slots to fill; it has a real NEED when the opposite is
+# true.
+SKILL_POSITIONS = ("QB", "RB", "WR", "TE")
+TRADE_FAIRNESS_TOLERANCE = 0.35  # max relative priority_score gap (of the larger side) to still call "fair enough to propose"
+
+
+def _position_demand(roster_requirements: Dict[str, int], num_teams: int = 1) -> Dict[str, float]:
+    """How many starting slots exist at each position across `num_teams`
+    teams (`num_teams=1` for one team's own starting slots). FLEX (W/R/T)
+    demand is split evenly across RB and WR, not TE -- TE rarely starts in
+    FLEX in practice, and this app already treats TE as its own scarce,
+    difference-maker position (see TE Difference-Maker Finder). A
+    reasonable approximation, not an exact simulation of real lineup
+    decisions.
+    """
+    flex = roster_requirements.get("FLEX", 0)
+    return {
+        "QB": num_teams * roster_requirements.get("QB", 0),
+        "RB": num_teams * (roster_requirements.get("RB", 0) + flex / 2),
+        "WR": num_teams * (roster_requirements.get("WR", 0) + flex / 2),
+        "TE": num_teams * roster_requirements.get("TE", 0),
+    }
+
+
+def compute_replacement_level(
+    rostered_players_df: pd.DataFrame,
+    roster_requirements: Optional[Dict[str, int]] = None,
+    num_teams: int = 10,
+) -> Dict[str, float]:
+    """The `priority_score` of the Nth-best player at each position,
+    where N is how many league-wide starting slots exist there (see
+    `_position_demand()`) -- computed across the WHOLE league's rostered
+    players, not just one team's roster or the free-agent pool alone.
+    """
+    requirements = roster_requirements or DEFAULT_ROSTER_REQUIREMENTS
+    demand = _position_demand(requirements, num_teams)
+
+    levels = {}
+    for position, n in demand.items():
+        pool = rostered_players_df[rostered_players_df["display_position"] == position]
+        if pool.empty or n <= 0:
+            levels[position] = 0.0
+            continue
+        sorted_scores = pool["priority_score"].sort_values(ascending=False).reset_index(drop=True)
+        idx = max(0, min(int(round(n)) - 1, len(sorted_scores) - 1))
+        levels[position] = float(sorted_scores.iloc[idx])
+    return levels
+
+
+def assess_team_needs(
+    team_id: str,
+    rostered_players_df: pd.DataFrame,
+    replacement_levels: Dict[str, float],
+    roster_requirements: Optional[Dict[str, int]] = None,
+) -> pd.DataFrame:
+    """Per-position surplus/need for one team: how many of its players at
+    a position clear replacement level (real starting-caliber depth)
+    minus how many starting slots it actually has to fill there --
+    positive `surplus` is real tradeable depth, negative is a real hole.
+    """
+    requirements = roster_requirements or DEFAULT_ROSTER_REQUIREMENTS
+    own_slots = _position_demand(requirements, num_teams=1)
+    team = rostered_players_df[rostered_players_df["team_id"] == team_id]
+
+    rows = []
+    for position in SKILL_POSITIONS:
+        pos_players = team[team["display_position"] == position]
+        level = replacement_levels.get(position, 0.0)
+        startable = pos_players[pos_players["priority_score"] >= level]
+        slots_needed = own_slots.get(position, 0)
+        rows.append({
+            "position": position,
+            "startable_count": len(startable),
+            "slots_needed": slots_needed,
+            "surplus": len(startable) - slots_needed,
+            "best_value": pos_players["priority_score"].max() if not pos_players.empty else None,
+            "worst_starter_value": startable["priority_score"].min() if not startable.empty else None,
+        })
+    return pd.DataFrame(rows)
+
+
+def _player_display_name(row: pd.Series) -> str:
+    name = row.get("name")
+    return name.get("full") if isinstance(name, dict) else name
+
+
+def find_free_agent_upgrades(
+    my_roster_df: pd.DataFrame,
+    free_agents_df: pd.DataFrame,
+    min_priority_score_gain: float = 10.0,
+) -> pd.DataFrame:
+    """For each skill position on your roster, compares your weakest
+    rostered player there against the best available free agent --
+    surfaces a concrete "drop X, add Y" suggestion whenever a free agent
+    clearly beats your worst player at that position (by at least
+    `min_priority_score_gain` `priority_score` points), rather than just
+    listing free agents ranked in a vacuum with no connection to your
+    actual roster.
+
+    Both inputs need a `priority_score` column (see `build_priority_board()`).
+
+    Returns:
+        DataFrame with `position`, `drop_player`/`drop_priority_score`,
+        `add_player`/`add_priority_score`, `priority_score_gain` columns,
+        sorted descending by gain. Empty if nothing clears the threshold.
+    """
+    columns = [
+        "position", "drop_player", "drop_priority_score",
+        "add_player", "add_priority_score", "priority_score_gain",
+    ]
+    suggestions = []
+    for position in SKILL_POSITIONS:
+        mine = my_roster_df[my_roster_df["display_position"] == position]
+        available = free_agents_df[free_agents_df["display_position"] == position]
+        if mine.empty or available.empty:
+            continue
+        worst_mine = mine.sort_values("priority_score", ascending=True).iloc[0]
+        best_fa = available.sort_values("priority_score", ascending=False).iloc[0]
+        gain = best_fa["priority_score"] - worst_mine["priority_score"]
+        if gain >= min_priority_score_gain:
+            suggestions.append({
+                "position": position,
+                "drop_player": _player_display_name(worst_mine),
+                "drop_priority_score": worst_mine["priority_score"],
+                "add_player": _player_display_name(best_fa),
+                "add_priority_score": best_fa["priority_score"],
+                "priority_score_gain": gain,
+            })
+
+    if not suggestions:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(suggestions).sort_values("priority_score_gain", ascending=False).reset_index(drop=True)
+
+
+def _pick_tradeable_player(
+    rostered_players_df: pd.DataFrame, team_id: str, position: str, replacement_level: float
+) -> Optional[pd.Series]:
+    """The most giveable startable player a team has at `position`: the
+    LOWEST `priority_score` player that still clears replacement level --
+    a real asset to whoever receives it, but the team's most spare one at
+    that position, not their best starter."""
+    pool = rostered_players_df[
+        (rostered_players_df["team_id"] == team_id)
+        & (rostered_players_df["display_position"] == position)
+        & (rostered_players_df["priority_score"] >= replacement_level)
+    ]
+    if pool.empty:
+        return None
+    return pool.sort_values("priority_score", ascending=True).iloc[0]
+
+
+def find_trade_candidates(
+    my_team_id: str,
+    rostered_players_df: pd.DataFrame,
+    roster_requirements: Optional[Dict[str, int]] = None,
+    num_teams: int = 10,
+    fairness_tolerance: float = TRADE_FAIRNESS_TOLERANCE,
+) -> pd.DataFrame:
+    """Proactively scans every other team in the league for a genuine
+    two-way fit with your team: a position where you have surplus
+    (tradeable depth) and they have a need, paired with a position where
+    they have surplus and you have a need -- a real "we'd both actually
+    want this" trade shape, not just "who has a good player."
+
+    Known limits -- read before trusting a suggestion: this is a
+    value-and-need heuristic, not a negotiation. It has no idea whether a
+    manager actually wants to trade, their own roster philosophy, keeper/
+    dynasty considerations, or plain stubbornness. Treat every row as a
+    conversation starter to evaluate yourself, never a trade either side
+    is guaranteed to accept.
+
+    Args:
+        my_team_id: Your `team_id` in `rostered_players_df`.
+        rostered_players_df: Every team's roster, league-wide, with
+            `team_id` and `priority_score` columns (see `build_priority_board()`).
+        num_teams: Used to compute replacement level (see
+            `compute_replacement_level()`) -- should match your league's
+            real team count.
+        fairness_tolerance: Max relative gap between the two traded
+            players' `priority_score` (as a fraction of the larger one)
+            to still surface the trade -- wildly lopsided "trades" aren't
+            realistic proposals and are filtered out, not just flagged.
+
+    Returns:
+        DataFrame with `other_team_id`, `you_give`/`you_give_position`/
+        `you_give_value`, `you_get`/`you_get_position`/`you_get_value`,
+        `fairness_gap_pct`, and `fit_score` columns, sorted descending by
+        fit. Empty if no genuine two-way fit exists anywhere in the league.
+    """
+    columns = [
+        "other_team_id", "you_give", "you_give_position", "you_give_value",
+        "you_get", "you_get_position", "you_get_value", "fairness_gap_pct", "fit_score",
+    ]
+    requirements = roster_requirements or DEFAULT_ROSTER_REQUIREMENTS
+    replacement_levels = compute_replacement_level(rostered_players_df, requirements, num_teams)
+
+    other_team_ids = [t for t in rostered_players_df["team_id"].unique() if t != my_team_id]
+    my_needs = assess_team_needs(my_team_id, rostered_players_df, replacement_levels, requirements).set_index("position")
+
+    candidates = []
+    for other_team_id in other_team_ids:
+        other_needs = assess_team_needs(
+            other_team_id, rostered_players_df, replacement_levels, requirements
+        ).set_index("position")
+
+        for give_position in SKILL_POSITIONS:
+            for get_position in SKILL_POSITIONS:
+                if give_position == get_position:
+                    continue  # never a real "fill a hole" trade if it's the same position both ways
+
+                my_surplus = my_needs.loc[give_position, "surplus"]
+                their_need = other_needs.loc[give_position, "surplus"]
+                their_surplus = other_needs.loc[get_position, "surplus"]
+                my_need = my_needs.loc[get_position, "surplus"]
+
+                if my_surplus <= 0 or their_need >= 0 or their_surplus <= 0 or my_need >= 0:
+                    continue  # not a genuine two-way fit -- one side gains nothing real
+
+                my_player = _pick_tradeable_player(
+                    rostered_players_df, my_team_id, give_position, replacement_levels[give_position]
+                )
+                their_player = _pick_tradeable_player(
+                    rostered_players_df, other_team_id, get_position, replacement_levels[get_position]
+                )
+                if my_player is None or their_player is None:
+                    continue
+
+                my_value, their_value = my_player["priority_score"], their_player["priority_score"]
+                gap = abs(my_value - their_value) / max(my_value, their_value, 1e-6)
+                if gap > fairness_tolerance:
+                    continue
+
+                candidates.append({
+                    "other_team_id": other_team_id,
+                    "you_give": _player_display_name(my_player),
+                    "you_give_position": give_position,
+                    "you_give_value": my_value,
+                    "you_get": _player_display_name(their_player),
+                    "you_get_position": get_position,
+                    "you_get_value": their_value,
+                    "fairness_gap_pct": gap,
+                    "fit_score": min(my_surplus, -their_need) + min(their_surplus, -my_need),
+                })
+
+    if not candidates:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(candidates).sort_values("fit_score", ascending=False).reset_index(drop=True)
