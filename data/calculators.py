@@ -57,6 +57,10 @@ Expected columns on the input DataFrame
 - ``sleeper_trending_adds``       (int) recent add count across all of
                                   Sleeper (not just this league) -- see
                                   ``api/external_sources.py``
+- ``game_wind_mph`` / ``game_precip_probability`` (float) forecasted
+                                  conditions for this week's game;
+                                  ``game_is_dome`` (bool) -- see
+                                  ``api/weather.py``
 
 Not every calculator needs every column -- see each docstring below.
 """
@@ -331,6 +335,8 @@ EFFICIENCY_GAP_THRESHOLD = 0.30  # percentile-rank gap within position
 MIN_POSITION_GROUP_FOR_EFFICIENCY_CHECK = 3
 FAVORABLE_IMPLIED_TEAM_TOTAL = 24.0  # Vegas-implied team point total (api/nfl_enrichment.py's game_script_*)
 SLEEPER_TRENDING_ADD_THRESHOLD = 5000  # sleeper_trending_adds -- Sleeper's own scale, not a percentage
+HIGH_WIND_CAUTION_MPH = 15.0  # sustained wind -- the point sports-weather research shows passing volume/efficiency drops off
+WIND_CAUTION_POSITIONS = {"QB", "WR", "TE"}
 
 
 def _efficiency_ahead_of_production_gap(players_df: pd.DataFrame) -> pd.Series:
@@ -372,11 +378,14 @@ def find_breakout_signals(players_df: pd.DataFrame, min_score: float = 1.0) -> p
     wider fantasy market (not just this Yahoo league) catching on via
     Sleeper's trending-adds data (`api/external_sources.py`).
 
-    Also raises (but doesn't score against) a QB "sophomore slump" caution:
-    rookie QBs who finished top-15 in fantasy PPG have historically
-    *declined* more often than not in Year 2 (roughly 11 of the last 14) --
-    a defense's film advantage apparently outweighing the QB's own growth.
-    See `api/nfl_enrichment.py`'s `build_qb_year2_regression_flags()`.
+    Also raises (but doesn't score against) two cautions: a QB "sophomore
+    slump" caution -- rookie QBs who finished top-15 in fantasy PPG have
+    historically *declined* more often than not in Year 2 (roughly 11 of
+    the last 14) -- a defense's film advantage apparently outweighing the
+    QB's own growth (see `api/nfl_enrichment.py`'s
+    `build_qb_year2_regression_flags()`) -- and a high-wind caution for
+    QB/WR/TE: sustained wind above `HIGH_WIND_CAUTION_MPH` historically
+    suppresses passing volume/efficiency (see `api/weather.py`).
 
     Known gap: a real signal from the same research this is built on --
     whether a rookie/sophomore's positional competition departed or
@@ -388,8 +397,10 @@ def find_breakout_signals(players_df: pd.DataFrame, min_score: float = 1.0) -> p
     Requires the enrichment fields from `api/nfl_enrichment.py`
     (`injury_opportunity`, `team_new_offensive_coordinator`/`team_new_head_coach`,
     `target_share`, `red_zone_share`, `is_rookie`/`draft_capital`,
-    `qb_year2_regression_caution`) plus Yahoo's own `percent_owned`/
-    `percent_owned_delta`. A signal simply doesn't fire for players missing
+    `qb_year2_regression_caution`, `game_script_implied_team_total`,
+    `game_wind_mph`) plus `sleeper_trending_adds` (`api/external_sources.py`)
+    and Yahoo's own `percent_owned`/`percent_owned_delta`. A signal simply
+    doesn't fire for players missing
     that data (e.g. the roughly half of rostered players outside nflverse's
     `yahoo_id` crosswalk) -- this never guesses at a missing value.
 
@@ -471,6 +482,15 @@ def find_breakout_signals(players_df: pd.DataFrame, min_score: float = 1.0) -> p
                 f"Sophomore-slump caution: top-15 QB PPG as a rookie ({row.get('qb_year1_ppg')} pts/gm) -- "
                 "historically ~79% of that group declines in Year 2"
             )
+
+        wind = row.get("game_wind_mph")
+        if (
+            row.get("display_position") in WIND_CAUTION_POSITIONS
+            and wind is not None
+            and pd.notna(wind)
+            and wind >= HIGH_WIND_CAUTION_MPH
+        ):
+            cautions.append(f"High wind forecast ({wind:.0f} mph) -- historically suppresses passing volume/efficiency")
 
         scores.append(score)
         signals_col.append(signals)

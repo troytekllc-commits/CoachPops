@@ -40,16 +40,25 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
     Wrapped in a try/except everywhere it's called — a failed/unreachable
     request is logged and skipped, never raised, since this is a nice-to-have
     signal, not core functionality.
+  - `weather.py` — forecasted game-day wind/precipitation for a team's next
+    game, via a free OpenWeatherMap API key (see Setup below). Skips
+    permanent domes and neutral-site/international games outright (weather
+    doesn't apply, or this module doesn't have reliable coordinates for
+    them) rather than guessing. Same "skip and log, never raise" pattern as
+    `external_sources.py` — no key configured, no network, or the game is
+    further out than the free tier's 5-day forecast window all degrade to
+    an empty result, not an error.
 - `data/` — analytics engines and local data/caches
   - `calculators.py` — seven pandas-based scoring engines tuned for this
     league's 3-WR / 6-bench / 2-IR format: `calculate_custom_value()`,
     `apply_rookie_bump()`, `calculate_qb_floor()`, `find_ir_stashes()`,
     `evaluate_wr_scarcity()`, `find_breakout_signals()` (now also credits a
-    favorable Vegas-implied team total and a Sleeper trending-adds spike),
-    `find_te_difference_makers()` (target share, red-zone share, TE snap
-    share/receiving-role split, team pass volume/efficiency, and Next Gen
-    Stats route-running separation — the pre-box-score signals that predict
-    a jump into TE's thin top tier).
+    favorable Vegas-implied team total and a Sleeper trending-adds spike,
+    and raises — without scoring against — a high-wind-forecast caution for
+    QB/WR/TE), `find_te_difference_makers()` (target share, red-zone share,
+    TE snap share/receiving-role split, team pass volume/efficiency, and
+    Next Gen Stats route-running separation — the pre-box-score signals
+    that predict a jump into TE's thin top tier).
   - `coaching_changes.csv.example` — template for the manually maintained
     OC/DC-hire data `nfl_enrichment.py` reads (copy to `coaching_changes.csv`
     and fill in from public reporting each offseason — no API exists for
@@ -163,6 +172,30 @@ file at the project root (gitignored) instead of a `.env` file.
    resulting token back into `private.json` so you won't be prompted again
    until it's revoked or expires.
 
+### Weather forecasts (optional, `openweathermap_api_key`)
+
+Forecasted wind/precipitation (see `api/weather.py`) needs a free
+OpenWeatherMap API key — get one at https://openweathermap.org/price (the
+free tier's 5-day forecast is all this project uses). Either set it as an
+environment variable:
+
+```bash
+export OPENWEATHERMAP_API_KEY=your-key-here
+```
+
+or add it to `private.json` alongside your Yahoo credentials:
+
+```json
+{
+  "consumer_key": "...",
+  "openweathermap_api_key": "your-key-here"
+}
+```
+
+This is entirely optional — without a key, every weather field simply
+stays empty (logged, never an error), same as any other missing enrichment
+source in this project.
+
 ## Running the dashboard
 
 ```bash
@@ -192,7 +225,7 @@ still fire on Yahoo's own `percent_owned` data alone).
 
 ### Additional data sources
 
-Beyond Yahoo and nflverse's core stats, three more real (non-mock) data
+Beyond Yahoo and nflverse's core stats, four more real (non-mock) data
 sources feed the calculators above:
 
 - **Vegas game script** (`build_game_script_lookup()` in
@@ -223,6 +256,17 @@ sources feed the calculators above:
   (5,000+ recent adds). Coverage is partial (verified live: roughly 9 of the
   top 50 trending players matched a `yahoo_id`) and a failed request is
   skipped, not raised.
+- **Forecasted game-day weather** (`api/weather.py`, optional — needs a
+  free OpenWeatherMap key, see Setup above): wind and precipitation for a
+  team's next game. Not sourced from `import_schedules()`'s own `temp`/
+  `wind` columns -- confirmed those are the *actual* recorded conditions,
+  filled in only after a game is played (0 of 272 games populated for the
+  fully-future 2026 schedule) -- so predicting an upcoming game's weather
+  needs a real forecast API instead. Skips permanent domes and
+  neutral-site/international games outright. Sustained wind above 15 mph
+  raises (without penalizing the score) a caution in `find_breakout_signals()`
+  for QB/WR/TE, since it's a well-documented suppressor of passing volume
+  and efficiency.
 
 ### Breakout Radar
 

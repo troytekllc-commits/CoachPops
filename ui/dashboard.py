@@ -355,6 +355,9 @@ def build_mock_players_df() -> pd.DataFrame:
         player.setdefault("ngs_yac_above_expectation", None)
         player.setdefault("ngs_time_to_throw", None)
         player.setdefault("ngs_cpoe", None)
+        player.setdefault("game_wind_mph", None)
+        player.setdefault("game_precip_probability", None)
+        player.setdefault("game_is_dome", None)
         player.setdefault("sleeper_trending_adds", None)
         player.setdefault("injury_opportunity", False)
         player.setdefault("injury_opportunity_ahead_player", None)
@@ -419,6 +422,17 @@ def build_mock_players_df() -> pd.DataFrame:
     by_id["100001"]["ngs_cpoe"] = 1.8   # Justin Scrambler: solid accuracy over expectation
     by_id["100002"]["ngs_cpoe"] = -2.1  # Pocket Palmer: high volume, but below expectation
 
+    # High-wind caution: Boom Bust Barry's game has a rough forecast --
+    # exactly the kind of added variance his profile doesn't need.
+    by_id["100008"]["game_wind_mph"] = 22.0
+    by_id["100008"]["game_precip_probability"] = 0.65
+    by_id["100008"]["game_is_dome"] = False
+
+    # Dome game, for contrast: Rico Rookie's game has no weather risk at all.
+    by_id["100006"]["game_wind_mph"] = None
+    by_id["100006"]["game_precip_probability"] = None
+    by_id["100006"]["game_is_dome"] = True
+
     # Injury-opened opportunity: a backup WR behind the already-injured Wounded Wes.
     players.append({
         "player_key": "449.p.100015",
@@ -443,6 +457,9 @@ def build_mock_players_df() -> pd.DataFrame:
         "ngs_yac_above_expectation": None,
         "ngs_time_to_throw": None,
         "ngs_cpoe": None,
+        "game_wind_mph": None,
+        "game_precip_probability": None,
+        "game_is_dome": None,
         "sleeper_trending_adds": None,
         "injury_opportunity": True,
         "injury_opportunity_ahead_player": "Wounded Wes",
@@ -490,6 +507,9 @@ def build_mock_players_df() -> pd.DataFrame:
         "ngs_yac_above_expectation": None,
         "ngs_time_to_throw": None,
         "ngs_cpoe": None,
+        "game_wind_mph": None,
+        "game_precip_probability": None,
+        "game_is_dome": None,
         "sleeper_trending_adds": None,
         "injury_opportunity": False,
         "injury_opportunity_ahead_player": None,
@@ -731,9 +751,10 @@ def render_breakout_radar(players_df: pd.DataFrame) -> None:
         "running ahead of the box score, the wider Yahoo market catching on early, a Day 3/UDFA "
         "rookie already earning more volume than their draft slot implied, a favorable Vegas-implied "
         "game script, or the wider fantasy market (via Sleeper's trending-adds data, not just this "
-        "Yahoo league) catching on. Also flags (but doesn't score against) a QB \"sophomore slump\" "
-        "caution -- rookie QBs who finished top-15 in PPG have historically declined more often than "
-        "not in Year 2."
+        "Yahoo league) catching on. Also flags (but doesn't score against) two cautions: a QB "
+        "\"sophomore slump\" -- rookie QBs who finished top-15 in PPG have historically declined more "
+        "often than not in Year 2 -- and a high-wind game forecast for QB/WR/TE (OpenWeatherMap), "
+        "which historically suppresses passing volume/efficiency."
     )
     candidates = _with_display_name(find_breakout_signals(players_df))
     if candidates.empty:

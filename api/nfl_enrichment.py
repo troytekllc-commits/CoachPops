@@ -1,8 +1,9 @@
 """Backfills the enrichment fields Yahoo's API doesn't provide -- rookie
 status/draft capital, target share, deep-target share, red-zone share,
-injury-opened opportunity, team coaching changes, a QB "sophomore slump"
-caution flag, and a rough weekly projection baseline (see
-``ENRICHMENT_FIELDS`` for the full, authoritative list) -- using
+injury-opened opportunity, team coaching changes, Vegas game script, Next
+Gen Stats, forecasted game-day weather (see ``api/weather.py``), a QB
+"sophomore slump" caution flag, and a rough weekly projection baseline
+(see ``ENRICHMENT_FIELDS`` for the full, authoritative list) -- using
 ``nfl_data_py``, joined onto Yahoo players via nflverse's own ``yahoo_id``
 crosswalk column.
 
@@ -616,6 +617,15 @@ def build_enrichment_lookup(
     ngs_receiving_by_gsis = build_ngs_receiving_lookup(season)
     ngs_passing_by_gsis = build_ngs_passing_lookup(season)
 
+    # Deferred import: api/weather.py imports load_schedules/_normalize_team_abbr
+    # from this module at load time, so importing it back at module level here
+    # would be circular. See api/weather.py's module docstring for why this
+    # needs its own forecast lookup instead of reusing the schedule's own
+    # temp/wind columns.
+    from api.weather import build_game_weather_lookup
+
+    weather_by_team = build_game_weather_lookup(season, game_script_week)
+
     draft_by_gsis = {
         row["gsis_id"]: {"round": int(row["round"]), "pick": int(row["pick"])}
         for _, row in draft_picks.dropna(subset=["gsis_id"]).iterrows()
@@ -635,6 +645,7 @@ def build_enrichment_lookup(
         game_script = game_script_by_team.get(team, {})
         ngs_rec = ngs_receiving_by_gsis.get(gsis_id, {})
         ngs_pass = ngs_passing_by_gsis.get(gsis_id, {})
+        weather = weather_by_team.get(team, {})
 
         lookup[yahoo_id] = {
             "is_rookie": bool(row.get("rookie_year") == season),
@@ -652,6 +663,9 @@ def build_enrichment_lookup(
             "ngs_yac_above_expectation": ngs_rec.get("ngs_yac_above_expectation"),
             "ngs_time_to_throw": ngs_pass.get("ngs_time_to_throw"),
             "ngs_cpoe": ngs_pass.get("ngs_cpoe"),
+            "game_wind_mph": weather.get("wind_mph"),
+            "game_precip_probability": weather.get("precip_probability"),
+            "game_is_dome": weather.get("game_is_dome"),
             "projected_points_by_week": estimate_projected_points_by_week(ppg_by_gsis.get(gsis_id)),
             "injury_opportunity": injury_opp.get("injury_opportunity", False),
             "injury_opportunity_ahead_player": injury_opp.get("injury_opportunity_ahead_player"),
@@ -674,6 +688,7 @@ ENRICHMENT_FIELDS = (
     "te_snap_share", "team_pass_rate", "team_pass_epa",
     "game_script_spread", "game_script_total", "game_script_implied_team_total",
     "ngs_separation", "ngs_yac_above_expectation", "ngs_time_to_throw", "ngs_cpoe",
+    "game_wind_mph", "game_precip_probability", "game_is_dome",
     "projected_points_by_week", "injury_opportunity", "injury_opportunity_ahead_player",
     "injury_opportunity_ahead_status", "team_new_head_coach", "team_head_coach_name",
     "team_new_offensive_coordinator", "team_offensive_coordinator_name",
