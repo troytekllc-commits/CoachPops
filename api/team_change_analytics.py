@@ -78,7 +78,14 @@ def find_team_changes(season: int) -> pd.DataFrame:
     merged["team_old"] = merged["team_old"].apply(_normalize_team_abbr)
     changed = merged[merged["team_new"] != merged["team_old"]]
 
-    return changed[["player_id", "player_name", "position", "team_old", "team_new"]].reset_index(drop=True)
+    # yahoo_id rides along on the same import_seasonal_rosters() row as
+    # player_id (nflverse's gsis_id) -- a real ID crosswalk, not name
+    # matching (see api/nfl_enrichment.py's module docstring for why that
+    # matters). Lets ui/dashboard.py's Priority Board join this report onto
+    # a Yahoo player by ID.
+    return changed[
+        ["player_id", "yahoo_id", "player_name", "position", "team_old", "team_new"]
+    ].reset_index(drop=True)
 
 
 def _context_notes(row: pd.Series) -> str:

@@ -78,18 +78,60 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
   whether it helps or hurts (team pass rate/efficiency, O-Line strength,
   new team's WR/TE target competition, coaching changes) — deliberately
   no single "value went up/down" score, since that's genuinely
-  position-dependent; see its module docstring.
+  position-dependent; see its module docstring. Its report now also
+  carries a `yahoo_id` column (a real ID crosswalk, riding along on the
+  same `import_seasonal_rosters()` row as its `player_id` -- not name
+  matching) so `build_priority_board()` can join a mover's context notes
+  onto the right Yahoo player.
 - `ui/` — Streamlit dashboard
-  - `dashboard.py` — 9-tab dashboard (League Optimizer, Rookie Radar,
-    QB Konami Code, IR Stash Targets, WR3 Floor Finder, Breakout Radar,
-    **TE Difference-Makers**, **O-Line Power Rankings**, **Team Change
-    Impact**), with a sidebar toggle between mock data and live Yahoo
-    data. The last two tabs work with zero Yahoo access — pure
-    `nfl_data_py`. Every tab's table is styled via `_style_table()` to
-    match the blue theme (`.streamlit/config.toml`): light zebra-striped
-    row banding plus a blue-intensity gradient (darker = better) on that
-    tab's key ranking column, hand-interpolated between the theme's two
-    blues rather than pulling in matplotlib.
+  - `dashboard.py` — 10-tab dashboard. **Priority Board** (see below) is
+    first; then League Optimizer, Rookie Radar, QB Konami Code, IR Stash
+    Targets, WR3 Floor Finder, Breakout Radar, **TE Difference-Makers**,
+    **O-Line Power Rankings**, and **Team Change Impact**. A sidebar
+    toggle switches between mock data and live Yahoo data; the last two
+    tabs (plus Priority Board's O-Line/Team Change context) work with
+    zero Yahoo access — pure `nfl_data_py`. Every tab's table is styled
+    via `_style_table()` to match the blue theme
+    (`.streamlit/config.toml`): light zebra-striped row banding plus a
+    blue-intensity gradient (darker = better) on that tab's key ranking
+    column, hand-interpolated between the theme's two blues rather than
+    pulling in matplotlib.
+
+### Priority Board
+
+The **Priority Board** tab (`build_priority_board()` in
+`data/calculators.py`) is the rollup: it blends every other calculator
+into one cross-position rank, for the question a real waiver claim or
+bench spot actually forces — "of these different positions competing for
+the same roster spot, who do I prioritize this week?" Every component is
+percentile-ranked to 0-1 before blending (so custom_value's raw points,
+breakout_score's small signal-count scale, and te_score's 0-100 all
+combine fairly):
+
+- **Production (40%)** — `calculate_custom_value()`'s output, ranked
+  *within position* (a QB's raw point total is never compared to a WR's).
+- **Opportunity (35%)** — `find_breakout_signals()`'s `breakout_score`,
+  ranked pool-wide. It's already a composite of injury opportunity,
+  coaching changes, Vegas game script, Sleeper trending, and ownership
+  trends, so it doubles here as "how much is about to change" for a player.
+- **Specialist (15%)** — whichever position-specific engine applies as a
+  bonus: `find_te_difference_makers()` for TEs, `apply_rookie_bump()` for
+  rookie RB/WR, `calculate_qb_floor()` for QBs, `evaluate_wr_scarcity()`
+  for WRs. Missing/not-applicable stays neutral (0.5), never penalized.
+- **Team context (10%)** — the player's team's O-Line Power Rankings
+  score, if supplied. Light context (a strong O-line raises the floor
+  under an RB/QB), not a primary driver.
+
+`priority_signals` merges Breakout Radar's signals with the specialist
+label that applied; `priority_cautions` carries Breakout Radar's cautions
+(QB sophomore-slump, high-wind forecast) plus, if a player is in the Team
+Change Impact report, that report's plain-language context notes —
+carried through as-is, never folded into the score, matching that tab's
+own explicit "no single value-up/down number" design. O-Line and Team
+Change context are optional and fetched independently in the dashboard
+layer — a failure in either (e.g. a season nflverse hasn't published
+weekly data for yet) degrades that one context source rather than
+breaking the whole board.
 
 ### A note on season defaults
 

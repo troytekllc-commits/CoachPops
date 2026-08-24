@@ -1,7 +1,9 @@
 """Custom league analytics engines.
 
-Six pandas-based calculators tuned for a 3-WR / 6-bench / 2-IR league
-format. Every function takes (and returns) a DataFrame of player records
+Eight pandas-based calculators tuned for a 3-WR / 6-bench / 2-IR league
+format -- the last, `build_priority_board()`, blends the other seven's
+output into one cross-position rank (see its section docstring below).
+Every function takes (and returns) a DataFrame of player records
 shaped like the nested structure Yahoo's Fantasy API actually returns for
 players, extended with a set of enrichment fields our app layers on top
 (projections, draft capital, target share, coaching changes, etc. -- in
@@ -598,3 +600,179 @@ def find_te_difference_makers(players_df: pd.DataFrame, min_score: float = 0.0) 
     tes["te_signals"] = tes.apply(signals, axis=1)
     candidates = tes[tes["te_score"] >= min_score]
     return candidates.sort_values("te_score", ascending=False).reset_index(drop=True)
+
+
+# --- Priority Board ----------------------------------------------------
+# Blends every other calculator in this module into one cross-position
+# rank -- for the actual question a waiver claim / bench spot forces:
+# "of these different positions all competing for the same roster spot,
+# who do I actually prioritize this week?" League Optimizer, Breakout
+# Radar, TE Difference-Makers, etc. each answer a narrower question well;
+# this tab is the rollup, not a replacement for any of them.
+#
+# All four components are percentile-ranked to 0-1 before blending, so
+# wildly different raw scales (custom_value in points, breakout_score's
+# small signal-count scale, te_score's 0-100) combine fairly. Weights
+# aren't enforced to sum to 1 -- pass your own `weights` dict if you want
+# a different balance, just know priority_score's 0-100 scale assumes they do.
+PRIORITY_WEIGHTS: Dict[str, float] = {
+    "production": 0.40,    # calculate_custom_value(), ranked WITHIN position (a QB's raw points
+                            # are never compared to a WR's) -- "how good are they, right now"
+    "opportunity": 0.35,   # find_breakout_signals()'s breakout_score, ranked pool-wide -- it's
+                            # already a composite of injury/coaching/game-script/Sleeper/ownership
+                            # signals, so it doubles here as "how much is about to change"
+    "specialist": 0.15,    # whichever position-specific engine applies (TE/rookie/QB/WR) --
+                            # a bonus signal, not a primary driver; neutral 0.5 if none apply
+    "team_context": 0.10,  # the player's team's O-Line Power Rankings score, if supplied --
+                            # context (a strong O-line raises the floor under an RB/QB), not a
+                            # primary driver; stays neutral 0.5 if oline_rankings isn't passed in
+}
+
+
+def _specialist_frame(sub_df: pd.DataFrame, raw_col: str, label_fmt) -> pd.DataFrame:
+    """One position-specialist engine's output (e.g. `find_te_difference_makers()`)
+    reduced to `{player_id, specialist_pct, specialist_label}` -- `raw_col`
+    percentile-ranked within that engine's own pool (already position-filtered
+    by the engine itself), with a human-readable label carrying the raw value."""
+    if sub_df.empty or "player_id" not in sub_df.columns:
+        return pd.DataFrame(columns=["player_id", "specialist_pct", "specialist_label"])
+    out = sub_df[["player_id", raw_col]].copy()
+    out["specialist_pct"] = out[raw_col].rank(pct=True)
+    out["specialist_label"] = out[raw_col].apply(label_fmt)
+    return out[["player_id", "specialist_pct", "specialist_label"]]
+
+
+def build_priority_board(
+    players_df: pd.DataFrame,
+    oline_rankings: Optional[pd.DataFrame] = None,
+    team_change_report: Optional[pd.DataFrame] = None,
+    weights: Optional[Dict[str, float]] = None,
+) -> pd.DataFrame:
+    """One cross-position ranked board blending every other calculator in
+    this module -- see the section docstring above for the blend and why
+    each component is percentile-ranked the way it is.
+
+    `priority_signals` merges `find_breakout_signals()`'s `breakout_signals`
+    with whichever specialist engine's label applied (if any) -- one place
+    to see *why* a player ranked where they did, instead of checking nine
+    tabs. `priority_cautions` is `find_breakout_signals()`'s `caution_flags`
+    verbatim (QB sophomore-slump, high-wind forecast) plus, if
+    `team_change_report` is supplied and this player is in it, that report's
+    plain-language `context_notes` -- carried through as-is, not folded into
+    the score, matching `api/team_change_analytics.py`'s own explicit design
+    choice not to force a team change into a single "helps/hurts" number.
+
+    Args:
+        players_df: Player records, enriched via `api/nfl_enrichment.py`
+            for best results -- most components below need it.
+        oline_rankings: Optional output of `api/oline_analytics.py`'s
+            `build_oline_power_rankings()` (needs `team` and `oline_score`
+            columns). This function takes no network dependency itself, by
+            design -- the caller (`ui/dashboard.py`) fetches this
+            separately and passes it in. Skipped (neutral 0.5) if omitted.
+        team_change_report: Optional output of
+            `api/team_change_analytics.py`'s `build_team_change_report()`
+            (needs a `yahoo_id` column -- a real ID crosswalk, not name
+            matching). Skipped entirely if omitted.
+        weights: Optional override for `PRIORITY_WEIGHTS`.
+
+    Returns:
+        Copy of `players_df` with `priority_score` (float, roughly 0-100),
+        `priority_signals` (list[str]), and `priority_cautions` (list[str])
+        columns, sorted descending.
+    """
+    w = weights or PRIORITY_WEIGHTS
+    df = players_df.copy()
+
+    # --- production: this league's real scoring, ranked within position ---
+    value_df = calculate_custom_value(df)[["player_id", "custom_value"]]
+    df = df.merge(value_df, on="player_id", how="left")
+    df["production_pct"] = df.groupby("display_position")["custom_value"].rank(pct=True).fillna(0.5)
+
+    # --- opportunity: Breakout Radar's composite, ranked pool-wide ---
+    breakout_df = find_breakout_signals(df, min_score=float("-inf"))[
+        ["player_id", "breakout_score", "breakout_signals", "caution_flags"]
+    ]
+    df = df.merge(breakout_df, on="player_id", how="left")
+    df["breakout_score"] = df["breakout_score"].fillna(0.0)
+    df["breakout_signals"] = df["breakout_signals"].apply(lambda s: s if isinstance(s, list) else [])
+    df["caution_flags"] = df["caution_flags"].apply(lambda s: s if isinstance(s, list) else [])
+    df["opportunity_pct"] = df["breakout_score"].rank(pct=True).fillna(0.5)
+
+    # --- specialist: whichever position-specific engine applies (a bonus,
+    # not a driver) -- a player could clear more than one (e.g. a rookie WR
+    # who also clears the WR3 floor threshold); keep whichever percentile is
+    # higher, since this is a bonus signal and the better-fitting engine
+    # should win, not the first one computed.
+    specialist_frames = []
+    te_pool = df[df["display_position"] == "TE"]
+    if len(te_pool) >= MIN_TE_GROUP_FOR_PERCENTILE:
+        te_df = find_te_difference_makers(df, min_score=float("-inf"))
+        specialist_frames.append(
+            _specialist_frame(te_df, "te_score", lambda v: f"TE difference-maker score: {v:.0f}/100")
+        )
+    specialist_frames.append(
+        _specialist_frame(
+            apply_rookie_bump(df), "back_half_points_bumped",
+            lambda v: f"Rookie back-half upside: {v:.0f} pts",
+        )
+    )
+    specialist_frames.append(
+        _specialist_frame(calculate_qb_floor(df), "qb_floor_score", lambda v: f"Rushing floor score: {v:.0f}")
+    )
+    specialist_frames.append(
+        _specialist_frame(evaluate_wr_scarcity(df), "wr_floor_score", lambda v: f"WR3 floor score: {v:.0f}")
+    )
+    specialist = pd.concat(specialist_frames, ignore_index=True)
+    if not specialist.empty:
+        specialist = specialist.sort_values("specialist_pct", ascending=False).drop_duplicates(
+            "player_id", keep="first"
+        )
+    df = df.merge(specialist, on="player_id", how="left")
+    df["specialist_pct"] = df["specialist_pct"].fillna(0.5)
+
+    # --- team context: O-Line Power Rankings, if supplied. Matched on
+    # editorial_team_abbr (Yahoo's team code) vs. oline_rankings' team column
+    # (already normalized in api/oline_analytics.py) -- these should agree
+    # for all 32 teams, but isn't independently re-verified here.
+    df["team_context_pct"] = 0.5
+    if oline_rankings is not None and not oline_rankings.empty:
+        oline_pct = oline_rankings[["team", "oline_score"]].copy()
+        oline_pct["team_context_pct"] = oline_pct["oline_score"].rank(pct=True)
+        df = df.merge(
+            oline_pct[["team", "team_context_pct"]].rename(columns={"team_context_pct": "_oline_pct"}),
+            left_on="editorial_team_abbr", right_on="team", how="left",
+        ).drop(columns=["team"])
+        df["team_context_pct"] = df["_oline_pct"].fillna(0.5)
+        df = df.drop(columns=["_oline_pct"])
+
+    df["priority_score"] = 100 * (
+        w["production"] * df["production_pct"]
+        + w["opportunity"] * df["opportunity_pct"]
+        + w["specialist"] * df["specialist_pct"]
+        + w["team_context"] * df["team_context_pct"]
+    )
+
+    # --- context-only: team-change notes, never folded into the score ---
+    change_notes_by_yahoo_id: Dict[str, str] = {}
+    if team_change_report is not None and not team_change_report.empty and "yahoo_id" in team_change_report.columns:
+        movers = team_change_report.dropna(subset=["yahoo_id"])
+        change_notes_by_yahoo_id = dict(zip(movers["yahoo_id"].astype(str), movers["context_notes"]))
+
+    def merge_signals(row: pd.Series) -> list:
+        signals = list(row["breakout_signals"])
+        if pd.notna(row.get("specialist_label")):
+            signals.append(row["specialist_label"])
+        return signals
+
+    def merge_cautions(row: pd.Series) -> list:
+        cautions = list(row["caution_flags"])
+        note = change_notes_by_yahoo_id.get(str(row["player_id"]))
+        if note:
+            cautions.append(f"Changed teams ({row.get('editorial_team_abbr')}): {note}")
+        return cautions
+
+    df["priority_signals"] = df.apply(merge_signals, axis=1)
+    df["priority_cautions"] = df.apply(merge_cautions, axis=1)
+
+    return df.sort_values("priority_score", ascending=False).reset_index(drop=True)

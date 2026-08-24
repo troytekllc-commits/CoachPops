@@ -33,6 +33,7 @@ sys.path.append(str(PROJECT_ROOT))
 from data.calculators import (  # noqa: E402
     DEFAULT_SCORING_SETTINGS,
     apply_rookie_bump,
+    build_priority_board,
     calculate_custom_value,
     calculate_qb_floor,
     evaluate_wr_scarcity,
@@ -934,6 +935,72 @@ def render_team_change_report() -> None:
     )
 
 
+def render_priority_board(players_df: pd.DataFrame) -> None:
+    """The rollup tab: blends every other tab's signal into one
+    cross-position rank, for the question a waiver claim actually forces
+    -- "of these different positions all competing for the same roster
+    spot, who do I prioritize this week?" See `build_priority_board()`'s
+    docstring in `data/calculators.py` for exactly how the blend works.
+
+    O-Line Power Rankings and Team Change Impact context are optional,
+    pure nfl_data_py additions fetched independently -- a failure in
+    either (e.g. a season nflverse hasn't published weekly data for yet)
+    degrades that one context source rather than breaking this tab."""
+    from api.nfl_enrichment import default_stats_season
+    from api.oline_analytics import build_oline_power_rankings
+    from api.team_change_analytics import build_team_change_report
+
+    st.subheader("Priority Board")
+    st.caption(
+        "Blends every other tab into one cross-position rank: this league's own scoring "
+        "(League Optimizer, ranked within position so a QB's raw points are never compared "
+        "to a WR's), Breakout Radar's opportunity score (already a composite of injury/"
+        "coaching/game-script/Sleeper/ownership signals), whichever position-specific tab "
+        "applies as a bonus (TE Difference-Makers, Rookie Radar, QB Konami Code, or WR3 Floor "
+        "Finder), and -- as light context, not a driver -- the player's team's O-Line Power "
+        "Ranking. Team Change Impact's notes show up as context too, never folded into the "
+        "score, matching that tab's own \"no single value-up/down number\" design. See "
+        "`build_priority_board()` in `data/calculators.py` for the exact weights."
+    )
+
+    season = st.number_input(
+        "Season (for O-Line/Team Change context)", min_value=2016, max_value=2035,
+        value=default_stats_season(), step=1, key="priority_board_season",
+    )
+
+    @st.cache_data(ttl=3600, show_spinner="Loading O-Line context...")
+    def _load_oline(season: int) -> pd.DataFrame:
+        return build_oline_power_rankings(season)
+
+    @st.cache_data(ttl=3600, show_spinner="Loading team-change context...")
+    def _load_team_change(season: int) -> pd.DataFrame:
+        return build_team_change_report(season)
+
+    oline_rankings = None
+    try:
+        oline_rankings = _load_oline(int(season))
+    except Exception as exc:
+        st.caption(f"⚠️ O-Line context unavailable for {season} ({exc}) -- team_context stays neutral.")
+
+    team_change_report = None
+    try:
+        team_change_report = _load_team_change(int(season))
+    except Exception as exc:
+        st.caption(f"⚠️ Team Change context unavailable for {season} ({exc}) -- skipped.")
+
+    board = _with_display_name(
+        build_priority_board(players_df, oline_rankings=oline_rankings, team_change_report=team_change_report)
+    )
+
+    display = board[
+        ["player_name", "editorial_team_abbr", "display_position", "priority_score",
+         "priority_signals", "priority_cautions"]
+    ].rename(columns={"editorial_team_abbr": "team", "display_position": "pos"})
+    display["priority_signals"] = display["priority_signals"].apply(lambda s: " | ".join(s) if s else "")
+    display["priority_cautions"] = display["priority_cautions"].apply(lambda s: " | ".join(s) if s else "")
+    st.dataframe(_style_table(display, highlight_col="priority_score"), use_container_width=True, hide_index=True)
+
+
 def load_live_players_df(count_limit: int, enrich: bool, season: int) -> pd.DataFrame:
     """Pull real waiver-wire players via YahooAuthManager + player_mapper,
     optionally backfilled with nfl_data_py via nfl_enrichment.
@@ -1022,8 +1089,9 @@ def main() -> None:
         )
         players_df = build_mock_players_df()
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(
         [
+            "Priority Board",
             "League Optimizer",
             "Rookie Radar",
             "QB Konami Code",
@@ -1036,22 +1104,24 @@ def main() -> None:
         ]
     )
     with tab1:
-        render_league_optimizer(players_df)
+        render_priority_board(players_df)
     with tab2:
-        render_rookie_radar(players_df)
+        render_league_optimizer(players_df)
     with tab3:
-        render_qb_konami_code(players_df)
+        render_rookie_radar(players_df)
     with tab4:
-        render_ir_stash_targets(players_df)
+        render_qb_konami_code(players_df)
     with tab5:
-        render_wr3_floor_finder(players_df)
+        render_ir_stash_targets(players_df)
     with tab6:
-        render_breakout_radar(players_df)
+        render_wr3_floor_finder(players_df)
     with tab7:
-        render_te_difference_makers(players_df)
+        render_breakout_radar(players_df)
     with tab8:
-        render_oline_rankings()
+        render_te_difference_makers(players_df)
     with tab9:
+        render_oline_rankings()
+    with tab10:
         render_team_change_report()
 
 
