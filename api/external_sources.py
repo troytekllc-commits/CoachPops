@@ -133,6 +133,30 @@ SLEEPER_STATUS_TO_YAHOO_STYLE = {
     "Practice Squad": "",
 }
 
+# Real, discovered mismatch: Sleeper's own `injury_status` field (checked
+# first, below) reports full English words -- confirmed live: "Questionable"
+# (430 players league-wide as of this check), "IR" (104), "NA" (92), "PUP"
+# (44), "Out" (11), "Sus" (9), "Doubtful" (3), "DNR" (3), "COV" (2) -- while
+# every calculator in this project that reads a `status` column
+# (`find_ir_stashes()`, `UNAVAILABLE_INJURY_STATUSES`, ...) expects Yahoo's
+# own short-code convention (`INJURY_STATUS_LABELS` in
+# `data/calculators.py`: "Q"/"D"/"O"/"IR"/"PUP"/"NA"/"SUSP"). "IR"/"PUP"/"NA"
+# happen to already match by coincidence -- "Out" and "Sus" do not, which
+# silently zeroed out IR Stash Targets' "O" filter (and the SUSP-exclusion
+# in the free-agent/roster availability filters) even when real players
+# carried that exact status. "DNR" ("Did Not Report") and "COV" have no
+# Yahoo-vocabulary equivalent and are passed through unchanged rather than
+# guessed at.
+SLEEPER_INJURY_STATUS_TO_YAHOO_STYLE = {
+    "Questionable": "Q",
+    "Doubtful": "D",
+    "Out": "O",
+    "IR": "IR",
+    "PUP": "PUP",
+    "NA": "NA",
+    "Sus": "SUSP",
+}
+
 
 def build_gsis_id_to_sleeper_id_map() -> Dict[str, str]:
     """``{gsis_id: sleeper_player_id}`` -- direct, no crosswalk detour
@@ -169,8 +193,9 @@ def build_sleeper_injury_status_lookup() -> Dict[str, dict]:
     into the same `status` column every calculator already expects.
 
     Prefers Sleeper's own `injury_status` (Questionable/Doubtful/Out/IR/
-    PUP/Sus/etc. -- a real weekly-report-style tag) when set; falls back
-    to a restyled `status` (Sleeper's broader Active/Inactive/Injured
+    PUP/Sus/etc. -- a real weekly-report-style tag), restyled via
+    `SLEEPER_INJURY_STATUS_TO_YAHOO_STYLE`, when set; falls back to a
+    restyled `status` (Sleeper's broader Active/Inactive/Injured
     Reserve/... roster state) otherwise. Never fabricates a status for a
     healthy, active player -- both map to `""`, same as Yahoo's own
     convention for "nothing to report."
@@ -183,7 +208,10 @@ def build_sleeper_injury_status_lookup() -> Dict[str, dict]:
             continue
         gsis_id = str(gsis_id).strip()
         injury_status = info.get("injury_status")
-        status = injury_status or SLEEPER_STATUS_TO_YAHOO_STYLE.get(info.get("status"), info.get("status") or "")
+        if injury_status:
+            status = SLEEPER_INJURY_STATUS_TO_YAHOO_STYLE.get(injury_status, injury_status)
+        else:
+            status = SLEEPER_STATUS_TO_YAHOO_STYLE.get(info.get("status"), info.get("status") or "")
         lookup[gsis_id] = {"status": status, "injury_body_part": info.get("injury_body_part")}
     return lookup
 
