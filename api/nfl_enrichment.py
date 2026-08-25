@@ -1494,3 +1494,39 @@ def attach_yahoo_adp(players_df: pd.DataFrame, csv_path: Optional[Path] = None) 
     df["yahoo_tier"] = matched.apply(lambda m: m.get("yahoo_tier"))
     df["yahoo_position_rank"] = matched.apply(lambda m: m.get("yahoo_position_rank"))
     return df
+
+
+def attach_our_adp_comparison(
+    df: pd.DataFrame, score_col: str, csv_path: Optional[Path] = None, ascending: bool = False
+) -> pd.DataFrame:
+    """Adds ``our_implied_adp`` -- this table's own overall rank by
+    `score_col` (whatever real signal it's already ranking players by),
+    on the exact same overall-draft-order scale real ADP is measured on
+    (1st, 2nd, 3rd best by that signal -- not a within-position rank).
+    Same idea as Draft Board's "our ADP (implied)" (see
+    `render_draft_board()` in `ui/dashboard.py` for the full reasoning),
+    generalized to any tab that already ranks players by *some* real
+    score, not just `priority_score`.
+
+    When `data/yahoo_draft_reference.csv` exists, also calls
+    `attach_yahoo_adp()` and adds ``value_vs_yahoo_adp`` -- real Yahoo
+    ADP minus `our_implied_adp`, a literal pick-count gap: positive means
+    this table's own signal says you can wait that many picks past where
+    Yahoo's real drafters actually take them. When the CSV doesn't exist,
+    only `our_implied_adp` is added -- the caller should check
+    `DEFAULT_YAHOO_DRAFT_REFERENCE_CSV.is_file()` itself to decide
+    whether to also show the Yahoo-derived columns.
+
+    `ascending`: False (default) for a "higher score = better" table
+    (the common case -- `priority_score`, `breakout_score`, etc.); set
+    True for a table where lower is better (there's no such case in this
+    project today, but this isn't assumed away).
+    """
+    df = df.copy()
+    df["our_implied_adp"] = df[score_col].rank(ascending=ascending, method="min").astype(int)
+
+    resolved_csv_path = csv_path or DEFAULT_YAHOO_DRAFT_REFERENCE_CSV
+    if resolved_csv_path.is_file():
+        df = attach_yahoo_adp(df, csv_path)
+        df["value_vs_yahoo_adp"] = df["yahoo_adp"] - df["our_implied_adp"]
+    return df

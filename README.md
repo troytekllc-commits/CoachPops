@@ -600,6 +600,24 @@ own `yahoo_position_rank`) — still useful for "who's rated too
 high/low relative to same-position peers," a different question than
 "how many picks of value."
 
+**Rolled out everywhere a real signal already ranks players**, not just
+Draft Board: `attach_our_adp_comparison()` (`api/nfl_enrichment.py`)
+generalizes the same idea to any table's own score column, adding **"our
+ADP (implied)"** (a rank by that table's real signal, on the same scale
+as ADP) plus, when the Yahoo reference exists, **"Yahoo ADP"** and
+**"value vs. Yahoo ADP"**. Live on: Priority Board (by `priority_score`),
+Rookie Radar (by bumped back-half upside — exactly where ADP mispricing
+of a real incoming rookie is most likely), WR3 Floor Finder (by
+`wr_floor_score`), Breakout Radar (by `breakout_score` — literally the
+same "is the market sleeping on them" question that tab already asks,
+made concrete), TE Difference-Makers (by `te_score`), and IR Stash
+Targets (by projected back-half points — a real, late/blank ADP next to
+a strong projection is exactly what makes a stash worth a roster spot).
+Deliberately NOT added to QB Konami Code (a skill-profile scatter, not a
+ranked list) or Next Man Up (its starter/backup-pair shape doesn't match
+the plain name/team schema this join needs without fragile name-string
+splitting) — a real, disclosed scope choice, not an oversight.
+
 #### Yahoo ADP reference (optional, manual)
 
 If `data/yahoo_draft_reference.csv` exists, Draft Board also shows this

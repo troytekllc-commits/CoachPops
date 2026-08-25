@@ -777,10 +777,14 @@ def _style_table(df: pd.DataFrame, highlight_col: Optional[str] = None, higher_i
 
 
 def _render_rookie_radar_section(players_df: pd.DataFrame) -> None:
+    from api.nfl_enrichment import DEFAULT_YAHOO_DRAFT_REFERENCE_CSV, attach_our_adp_comparison
+
     st.markdown("#### Rookie RBs & WRs, Ranked by Bumped Back-Half Upside")
     st.caption(
         "Back-half-of-season projections bumped by NFL draft capital -- Day 1/2 picks "
-        "get the biggest boost. High-variance bench stashes worth rostering now."
+        "get the biggest boost. High-variance bench stashes worth rostering now. \"our ADP "
+        "(implied)\" is this table's own rank by that bumped upside, directly comparable to "
+        "real Yahoo ADP -- see Draft Board for the full reasoning."
     )
     bumped = _with_display_name(apply_rookie_bump(players_df))
     if bumped.empty:
@@ -793,14 +797,25 @@ def _render_rookie_radar_section(players_df: pd.DataFrame) -> None:
         return f"Round {dc['round']}, Pick {dc['pick']}"
 
     bumped["draft_capital_label"] = bumped["draft_capital"].apply(draft_label)
-    display = bumped[
-        ["player_name", "editorial_team_abbr", "display_position", "draft_capital_label",
-         "back_half_points_base", "back_half_points_bumped"]
-    ].rename(columns={
+    bumped = attach_our_adp_comparison(bumped, "back_half_points_bumped")
+    has_yahoo_adp_reference = DEFAULT_YAHOO_DRAFT_REFERENCE_CSV.is_file()
+
+    columns = [
+        "player_name", "editorial_team_abbr", "display_position", "draft_capital_label",
+        "back_half_points_base", "back_half_points_bumped", "our_implied_adp",
+    ]
+    rename = {
         "editorial_team_abbr": "team", "display_position": "pos",
         "draft_capital_label": "draft_capital",
         "back_half_points_base": "back_half_pts_base", "back_half_points_bumped": "back_half_pts_bumped",
-    })
+        "our_implied_adp": "our ADP (implied)",
+    }
+    if has_yahoo_adp_reference:
+        columns += ["yahoo_adp", "value_vs_yahoo_adp"]
+        rename["yahoo_adp"] = "Yahoo ADP"
+        rename["value_vs_yahoo_adp"] = "value vs. Yahoo ADP"
+
+    display = bumped[columns].rename(columns=rename)
     st.dataframe(
         _style_table(display, highlight_col="back_half_pts_bumped"),
         use_container_width=True,
@@ -854,18 +869,36 @@ def _render_qb_konami_section(players_df: pd.DataFrame) -> None:
 
 
 def _render_ir_stash_section(players_df: pd.DataFrame) -> None:
+    from api.nfl_enrichment import DEFAULT_YAHOO_DRAFT_REFERENCE_CSV, attach_our_adp_comparison
+
     st.markdown("#### IR Stash Targets")
     st.caption(
         "Currently out (O / IR / PUP) but projected for a strong back half once healthy -- "
-        "worth one of this league's 2 IR slots."
+        "worth one of this league's 2 IR slots. \"our ADP (implied)\" is this table's own rank "
+        "by back-half projection, directly comparable to real Yahoo ADP -- see Draft Board for "
+        "the full reasoning; a real, late/blank Yahoo ADP alongside a strong back-half "
+        "projection is exactly what makes a stash worth a roster spot right now."
     )
     stashes = _with_display_name(find_ir_stashes(players_df))
     if stashes.empty:
         st.info("No IR-eligible stash targets clear the back-half projection threshold right now.")
         return
-    display = stashes[
-        ["player_name", "editorial_team_abbr", "display_position", "status", "projected_back_half_points"]
-    ].rename(columns={"editorial_team_abbr": "team", "display_position": "pos"})
+    stashes = attach_our_adp_comparison(stashes, "projected_back_half_points")
+    has_yahoo_adp_reference = DEFAULT_YAHOO_DRAFT_REFERENCE_CSV.is_file()
+
+    columns = [
+        "player_name", "editorial_team_abbr", "display_position", "status",
+        "projected_back_half_points", "our_implied_adp",
+    ]
+    rename = {
+        "editorial_team_abbr": "team", "display_position": "pos", "our_implied_adp": "our ADP (implied)",
+    }
+    if has_yahoo_adp_reference:
+        columns += ["yahoo_adp", "value_vs_yahoo_adp"]
+        rename["yahoo_adp"] = "Yahoo ADP"
+        rename["value_vs_yahoo_adp"] = "value vs. Yahoo ADP"
+
+    display = stashes[columns].rename(columns=rename)
     st.dataframe(
         _style_table(display, highlight_col="projected_back_half_points"),
         use_container_width=True,
@@ -874,18 +907,33 @@ def _render_ir_stash_section(players_df: pd.DataFrame) -> None:
 
 
 def _render_wr3_floor_finder_section(players_df: pd.DataFrame) -> None:
+    from api.nfl_enrichment import DEFAULT_YAHOO_DRAFT_REFERENCE_CSV, attach_our_adp_comparison
+
     st.markdown("#### WR3 Floor Finder")
     st.caption(
         "Receivers with enough target volume to trust, ranked down for over-reliance on "
-        "low-probability deep-ball touchdowns."
+        "low-probability deep-ball touchdowns. \"our ADP (implied)\" is this table's own rank "
+        "by `wr_floor_score`, directly comparable to real Yahoo ADP -- see Draft Board for the "
+        "full reasoning."
     )
     safe_wrs = _with_display_name(evaluate_wr_scarcity(players_df))
     if safe_wrs.empty:
         st.info("No WRs clear the minimum target share threshold right now.")
         return
-    display = safe_wrs[
-        ["player_name", "editorial_team_abbr", "target_share", "deep_target_share", "wr_floor_score"]
-    ].rename(columns={"editorial_team_abbr": "team"})
+    safe_wrs = attach_our_adp_comparison(safe_wrs, "wr_floor_score")
+    has_yahoo_adp_reference = DEFAULT_YAHOO_DRAFT_REFERENCE_CSV.is_file()
+
+    columns = [
+        "player_name", "editorial_team_abbr", "target_share", "deep_target_share",
+        "wr_floor_score", "our_implied_adp",
+    ]
+    rename = {"editorial_team_abbr": "team", "our_implied_adp": "our ADP (implied)"}
+    if has_yahoo_adp_reference:
+        columns += ["yahoo_adp", "value_vs_yahoo_adp"]
+        rename["yahoo_adp"] = "Yahoo ADP"
+        rename["value_vs_yahoo_adp"] = "value vs. Yahoo ADP"
+
+    display = safe_wrs[columns].rename(columns=rename)
     st.dataframe(
         _style_table(display, highlight_col="wr_floor_score"),
         use_container_width=True,
@@ -894,6 +942,8 @@ def _render_wr3_floor_finder_section(players_df: pd.DataFrame) -> None:
 
 
 def _render_breakout_radar_section(players_df: pd.DataFrame) -> None:
+    from api.nfl_enrichment import DEFAULT_YAHOO_DRAFT_REFERENCE_CSV, attach_our_adp_comparison
+
     st.markdown("#### Breakout Radar")
     st.caption(
         "Scans for the same predictive patterns behind last season's hardest-to-see-coming "
@@ -904,22 +954,38 @@ def _render_breakout_radar_section(players_df: pd.DataFrame) -> None:
         "Yahoo league) catching on. Also flags (but doesn't score against) two cautions: a QB "
         "\"sophomore slump\" -- rookie QBs who finished top-15 in PPG have historically declined more "
         "often than not in Year 2 -- and a high-wind game forecast for QB/WR/TE (OpenWeatherMap), "
-        "which historically suppresses passing volume/efficiency."
+        "which historically suppresses passing volume/efficiency. \"our ADP (implied)\" is this "
+        "table's own rank by `breakout_score` -- exactly the \"is the market sleeping on this "
+        "player\" question this tab already asks, made literal via a real pick-count comparison "
+        "against Yahoo ADP -- see Draft Board for the full reasoning."
     )
     candidates = _with_display_name(find_breakout_signals(players_df))
     if candidates.empty:
         st.info("No players clear the breakout-score threshold in the current pool.")
         return
 
-    display = candidates[
-        ["player_name", "editorial_team_abbr", "display_position", "breakout_score", "breakout_signals", "caution_flags"]
-    ].rename(columns={"editorial_team_abbr": "team", "display_position": "pos"})
+    candidates = attach_our_adp_comparison(candidates, "breakout_score")
+    has_yahoo_adp_reference = DEFAULT_YAHOO_DRAFT_REFERENCE_CSV.is_file()
+
+    columns = [
+        "player_name", "editorial_team_abbr", "display_position", "breakout_score", "our_implied_adp",
+    ]
+    rename = {"editorial_team_abbr": "team", "display_position": "pos", "our_implied_adp": "our ADP (implied)"}
+    if has_yahoo_adp_reference:
+        columns += ["yahoo_adp", "value_vs_yahoo_adp"]
+        rename["yahoo_adp"] = "Yahoo ADP"
+        rename["value_vs_yahoo_adp"] = "value vs. Yahoo ADP"
+    columns += ["breakout_signals", "caution_flags"]
+
+    display = candidates[columns].rename(columns=rename)
     display["breakout_signals"] = display["breakout_signals"].apply(lambda s: " | ".join(s) if s else "")
     display["caution_flags"] = display["caution_flags"].apply(lambda s: " | ".join(s) if s else "")
     st.dataframe(_style_table(display, highlight_col="breakout_score"), use_container_width=True, hide_index=True)
 
 
 def _render_te_difference_makers_section(players_df: pd.DataFrame) -> None:
+    from api.nfl_enrichment import DEFAULT_YAHOO_DRAFT_REFERENCE_CSV, attach_our_adp_comparison
+
     st.markdown("#### TE Difference-Maker Finder")
     st.caption(
         "TE is unusually top-heavy -- a handful of must-start options, then a canyon, then "
@@ -927,21 +993,35 @@ def _render_te_difference_makers_section(players_df: pd.DataFrame) -> None:
         "top tier *before* the box score shows it: real target share, a real red-zone role, "
         "actually running receiving routes (not just blocking), real route-running separation "
         "(Next Gen Stats), and a good, high-volume passing offense to work in -- plus the same "
-        "opportunity signals as Breakout Radar."
+        "opportunity signals as Breakout Radar. \"our ADP (implied)\" is this table's own rank "
+        "by `te_score`, directly comparable to real Yahoo ADP -- see Draft Board for the full "
+        "reasoning."
     )
     ranked = _with_display_name(find_te_difference_makers(players_df))
     if ranked.empty:
         st.info("Not enough TEs in the current pool to rank (need at least 3).")
         return
 
-    display = ranked[
-        ["player_name", "editorial_team_abbr", "te_score", "target_share", "red_zone_share",
-         "te_snap_share", "ngs_separation", "team_pass_rate", "te_signals"]
-    ].rename(columns={
-        "editorial_team_abbr": "team", "te_score": "score", "target_share": "target share",
-        "red_zone_share": "red-zone share", "te_snap_share": "snap share (receiving role)",
-        "ngs_separation": "separation (yds)", "team_pass_rate": "team pass rate",
-    })
+    ranked = attach_our_adp_comparison(ranked, "te_score")
+    has_yahoo_adp_reference = DEFAULT_YAHOO_DRAFT_REFERENCE_CSV.is_file()
+
+    columns = [
+        "player_name", "editorial_team_abbr", "te_score", "our_implied_adp", "target_share",
+        "red_zone_share", "te_snap_share", "ngs_separation", "team_pass_rate",
+    ]
+    rename = {
+        "editorial_team_abbr": "team", "te_score": "score", "our_implied_adp": "our ADP (implied)",
+        "target_share": "target share", "red_zone_share": "red-zone share",
+        "te_snap_share": "snap share (receiving role)", "ngs_separation": "separation (yds)",
+        "team_pass_rate": "team pass rate",
+    }
+    if has_yahoo_adp_reference:
+        columns += ["yahoo_adp", "value_vs_yahoo_adp"]
+        rename["yahoo_adp"] = "Yahoo ADP"
+        rename["value_vs_yahoo_adp"] = "value vs. Yahoo ADP"
+    columns += ["te_signals"]
+
+    display = ranked[columns].rename(columns=rename)
     display["te_signals"] = display["te_signals"].apply(lambda s: " | ".join(s) if s else "")
     st.dataframe(_style_table(display, highlight_col="score"), use_container_width=True, hide_index=True)
 
@@ -1423,7 +1503,11 @@ def render_priority_board(players_df: pd.DataFrame) -> None:
     pure nfl_data_py additions fetched independently -- a failure in
     either (e.g. a season nflverse hasn't published weekly data for yet)
     degrades that one context source rather than breaking this tab."""
-    from api.nfl_enrichment import default_stats_season
+    from api.nfl_enrichment import (
+        DEFAULT_YAHOO_DRAFT_REFERENCE_CSV,
+        attach_our_adp_comparison,
+        default_stats_season,
+    )
     from api.oline_analytics import build_oline_power_rankings
     from api.team_change_analytics import build_team_change_report
 
@@ -1437,8 +1521,12 @@ def render_priority_board(players_df: pd.DataFrame) -> None:
         "Finder), and -- as light context, not a driver -- the player's team's O-Line Power "
         "Ranking. Team Change Impact's notes show up as context too, never folded into the "
         "score, matching that tab's own \"no single value-up/down number\" design. See "
-        "`build_priority_board()` in `data/calculators.py` for the exact weights."
+        "`build_priority_board()` in `data/calculators.py` for the exact weights. **\"our ADP "
+        "(implied)\"** is this board's own overall rank by `priority_score` (across every "
+        "position), on the same overall-draft-order scale real ADP is measured on -- see Draft "
+        "Board for the full reasoning; \"value vs. Yahoo ADP\" is the literal pick-count gap."
     )
+    has_yahoo_adp_reference = DEFAULT_YAHOO_DRAFT_REFERENCE_CSV.is_file()
 
     season = st.number_input(
         "Season (for O-Line/Team Change context)", min_value=2016, max_value=2035,
@@ -1468,13 +1556,23 @@ def render_priority_board(players_df: pd.DataFrame) -> None:
     board = _with_display_name(
         build_priority_board(players_df, oline_rankings=oline_rankings, team_change_report=team_change_report)
     )
+    board = attach_our_adp_comparison(board, "priority_score")
 
-    display = board[
-        ["player_name", "editorial_team_abbr", "display_position", "status", "priority_score",
-         "custom_value", "priority_signals", "priority_cautions"]
-    ].rename(columns={
+    columns = [
+        "player_name", "editorial_team_abbr", "display_position", "status", "priority_score",
+        "custom_value", "our_implied_adp",
+    ]
+    rename = {
         "editorial_team_abbr": "team", "display_position": "pos", "custom_value": "league value pts",
-    })
+        "our_implied_adp": "our ADP (implied)",
+    }
+    if has_yahoo_adp_reference:
+        columns += ["yahoo_adp", "value_vs_yahoo_adp"]
+        rename["yahoo_adp"] = "Yahoo ADP"
+        rename["value_vs_yahoo_adp"] = "value vs. Yahoo ADP"
+    columns += ["priority_signals", "priority_cautions"]
+
+    display = board[columns].rename(columns=rename)
     display["priority_signals"] = display["priority_signals"].apply(lambda s: " | ".join(s) if s else "")
     display["priority_cautions"] = display["priority_cautions"].apply(lambda s: " | ".join(s) if s else "")
     st.dataframe(_style_table(display, highlight_col="priority_score"), use_container_width=True, hide_index=True)
