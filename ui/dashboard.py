@@ -1055,8 +1055,18 @@ def render_team_change_report() -> None:
     try:
         report = _load(int(season))
     except Exception as exc:
-        st.error(f"Couldn't build the team change report for {season}: {exc}")
-        return
+        fallback_season = int(season) - 1
+        st.warning(
+            f"Couldn't build the team change report for {int(season)} ({exc}) -- nflverse likely "
+            f"hasn't published full weekly stats for that season yet (a known, real gap as of this "
+            f"writing). Falling back to {fallback_season}.",
+            icon="⚠️",
+        )
+        try:
+            report = _load(fallback_season)
+        except Exception as exc2:
+            st.error(f"Couldn't build the team change report for {fallback_season} either ({exc2}).", icon="🚫")
+            return
 
     if report.empty:
         st.info(f"No team changes found for {season} (or {season - 1} data isn't available).")
