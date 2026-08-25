@@ -119,20 +119,37 @@ def _context_notes(row: pd.Series) -> str:
     return "; ".join(notes) if notes else "Insufficient data to assess context"
 
 
-def build_team_change_report(season: int) -> pd.DataFrame:
+def build_team_change_report(season: int, stats_season: Optional[int] = None) -> pd.DataFrame:
     """Full team-change report: every skill-position mover, their old vs.
     new team's offensive context, and a plain-language summary of whether
     the move looks favorable, unfavorable, or mixed for their position.
+
+    `season` and `stats_season` are deliberately separate, same idea as
+    `api/nfl_enrichment.py`'s `season`/`roster_season` split: `season` is
+    which real roster transition to report movers for (e.g. 2026 vs.
+    2025's real, current rosters -- available immediately, confirmed live,
+    well before any 2026 game is played), while `stats_season` is which
+    season's real PLAYED-game stats to use for the offense-pace/O-line/
+    target-competition context features -- defaults to `season` itself
+    (preserves plain historical-research behavior, e.g. `season=2020`
+    still uses 2020 stats for context with no caller changes needed), but
+    should be pinned to the last real stats season when `season` has no
+    games played yet -- see `render_team_change_report()`'s fallback in
+    `ui/dashboard.py`, which retries with `stats_season=season - 1` on a
+    real data-availability failure while keeping the mover list itself
+    pinned to the originally requested `season`, rather than regressing
+    the whole report (movers included) by a full year.
     """
+    stats_season = stats_season if stats_season is not None else season
     movers = find_team_changes(season)
     if movers.empty:
         return movers
 
-    offense_new = compute_team_offense_context(season).add_suffix("_new").rename(columns={"team_new": "team"})
-    offense_old = compute_team_offense_context(season - 1).add_suffix("_old").rename(columns={"team_old": "team"})
-    oline_new = build_oline_power_rankings(season)[["team", "oline_score"]].rename(columns={"oline_score": "oline_score_new"})
-    oline_old = build_oline_power_rankings(season - 1)[["team", "oline_score"]].rename(columns={"oline_score": "oline_score_old"})
-    target_competition = compute_target_competition(season)
+    offense_new = compute_team_offense_context(stats_season).add_suffix("_new").rename(columns={"team_new": "team"})
+    offense_old = compute_team_offense_context(stats_season - 1).add_suffix("_old").rename(columns={"team_old": "team"})
+    oline_new = build_oline_power_rankings(stats_season)[["team", "oline_score"]].rename(columns={"oline_score": "oline_score_new"})
+    oline_old = build_oline_power_rankings(stats_season - 1)[["team", "oline_score"]].rename(columns={"oline_score": "oline_score_old"})
+    target_competition = compute_target_competition(stats_season)
     coaching = build_coaching_change_lookup(season)
 
     df = movers.merge(offense_new, left_on="team_new", right_on="team", how="left").drop(columns=["team"])

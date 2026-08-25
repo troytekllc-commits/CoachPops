@@ -1049,23 +1049,29 @@ def render_team_change_report() -> None:
     )
 
     @st.cache_data(ttl=3600, show_spinner="Comparing team contexts across two seasons...")
-    def _load(season: int) -> pd.DataFrame:
-        return build_team_change_report(season)
+    def _load(season: int, stats_season: int) -> pd.DataFrame:
+        return build_team_change_report(season, stats_season=stats_season)
 
     try:
-        report = _load(int(season))
+        report = _load(int(season), int(season))
     except Exception as exc:
-        fallback_season = int(season) - 1
+        stats_season = int(season) - 1
         st.warning(
-            f"Couldn't build the team change report for {int(season)} ({exc}) -- nflverse likely "
-            f"hasn't published full weekly stats for that season yet (a known, real gap as of this "
-            f"writing). Falling back to {fallback_season}.",
+            f"Couldn't use {int(season)}'s own stats for team-context (pass rate/O-line/target "
+            f"competition) ({exc}) -- nflverse likely hasn't published real game stats for that "
+            f"season yet (a known, real gap for the current/an upcoming season). Using {stats_season}'s "
+            f"real stats for that context instead -- the mover list itself is still {int(season)}'s "
+            f"real, current rosters.",
             icon="⚠️",
         )
         try:
-            report = _load(fallback_season)
+            report = _load(int(season), stats_season)
         except Exception as exc2:
-            st.error(f"Couldn't build the team change report for {fallback_season} either ({exc2}).", icon="🚫")
+            st.error(
+                f"Couldn't build the team change report for {int(season)} even with {stats_season} "
+                f"stats context ({exc2}).",
+                icon="🚫",
+            )
             return
 
     if report.empty:

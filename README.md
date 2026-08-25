@@ -404,6 +404,27 @@ pool for any season it couldn't handle -- now degrades to "no
 opportunity signal for this season" instead, since that's a nice-to-have
 context flag, not something worth losing the whole board over.
 
+#### Team Change Impact's own season/stats-season split
+
+Selecting the *current* real season (e.g. 2026, before any game of it
+has been played) used to regress the whole report a full year back --
+movers included -- once the offense-pace/O-line/target-competition
+context computation failed for lack of real game stats, silently
+answering "who changed teams for 2025" when you'd asked about 2026.
+`build_team_change_report()` now takes `season` (which real roster
+transition to report movers for -- `find_team_changes()`/coaching-change
+context always use this directly; real current rosters and next
+season's coaching staff are both published well before any game is
+played, confirmed live) and a separate `stats_season` (which season's
+real played-game stats to use for pass-rate/O-line/target-competition
+context, defaulting to `season` itself). `render_team_change_report()`
+retries with `stats_season = season - 1` on a real data-availability
+failure while keeping the mover list pinned to the season you actually
+asked about -- same `season`/`roster_season` idea as Draft Board and Run
+Game Outlook, applied here as `season`/`stats_season` instead since this
+report's own `season` argument already meant "which roster transition,"
+not "which stats."
+
 #### A real baseline for actual incoming rookies
 
 `apply_rookie_bump()` boosts a rookie's *existing* baseline projection —
