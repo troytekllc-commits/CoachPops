@@ -1,0 +1,38 @@
+name: Import check
+
+# Minimal CI: catches a broken import (typo, missing dependency, circular
+# import) before anyone opens the deployed app and finds out the hard way.
+# Deliberately NOT a full test suite -- this project has no pytest tests
+# yet; this just proves every module still imports cleanly under the
+# exact pinned dependency set in requirements.txt.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  import-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Import every module
+        run: |
+          python -c "import ui.dashboard"
+          python -c "import api.nfl_enrichment"
+          python -c "import api.oline_analytics"
+          python -c "import api.team_change_analytics"
+          python -c "import api.run_game_analytics"
+          python -c "import api.coaching_analytics"
+          python -c "import api.handcuff_analytics"
+          python -c "import api.qb_value_analytics"
+          python -c "import api.fantasypros"
+          python -c "import api.external_sources"
+          python -c "import api.weather"
+          python -c "import api.player_mapper"
+          python -c "import api.yahoo_auth"
+          python -c "import data.calculators"

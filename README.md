@@ -628,6 +628,14 @@ the market drafting them earlier than their real production supports.
 Degrades to whichever market-cost signal is actually available (Yahoo
 ADP, FantasyPros, or neither) rather than requiring both.
 
+Draft Board and QB Value Finder share one `@st.cache_data`-cached
+`_load_scored_draft_board_pool()` (`ui/dashboard.py`) rather than each
+defining its own identical inner loader -- two separate closures with
+the same logic would each get their own cache entry under Streamlit's
+per-function caching, silently building the same real, full-season
+player pool twice. Whichever tab you open first computes it; the other
+reuses that exact result instead of rebuilding from scratch.
+
 ### A note on season defaults
 
 Two different "current season" concepts matter here. `default_nfl_season()`
@@ -679,6 +687,22 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
+
+`requirements.txt` pins exact versions (rather than bare package names) --
+a real, discovered gap this closes: with unpinned dependencies, a fresh
+Streamlit Community Cloud deploy can install a different `nfl_data_py`/
+`pandas`/`streamlit` version than whatever's tested locally, and a
+version-specific bug in that different version can surface as a
+confusing, unrelated-looking error on the deployed app that never
+reproduces locally. Pinned to whatever's actually been tested against
+this codebase; bump deliberately (and re-test) rather than letting `pip`
+pick silently.
+
+A minimal GitHub Actions workflow (`.github/workflows/import-check.yml`)
+installs this exact pinned set and imports every module on every push --
+not a real test suite (there isn't one yet), just a fast, free tripwire
+for a broken import (a typo, a missing dependency, a circular import)
+before anyone opens the app and finds out the hard way.
 
 ### Yahoo API credentials (`private.json`)
 

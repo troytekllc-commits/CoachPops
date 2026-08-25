@@ -1101,18 +1101,17 @@ def _render_coaching_section(season: int) -> None:
         st.info("No real, current coaching changes found for this season.")
         return
 
-    display = report.copy()
-    display["coach_style_last_season"] = display["pass_rate"].apply(
-        lambda p: f"{p:.0%} pass rate" if pd.notna(p) else "unknown"
-    )
-    table = display[[
+    table = report[[
         "team", "head_coach_name", "new_head_coach", "offensive_coordinator_name",
-        "new_offensive_coordinator", "coach_style_last_season", "oline_score", "prior_team", "context_notes",
+        "new_offensive_coordinator", "pass_rate", "rush_rate", "oline_score",
+        "prior_team", "prior_pass_rate", "prior_rush_rate", "context_notes",
     ]].rename(columns={
         "head_coach_name": "head coach", "new_head_coach": "new HC?",
         "offensive_coordinator_name": "offensive coordinator", "new_offensive_coordinator": "new OC?",
-        "coach_style_last_season": "team's style last season", "oline_score": "O-line score",
-        "prior_team": "HC's prior team", "context_notes": "context",
+        "pass_rate": "pass rate (last season)", "rush_rate": "rush rate (last season)",
+        "oline_score": "O-line score", "prior_team": "HC's prior team",
+        "prior_pass_rate": "prior team pass rate", "prior_rush_rate": "prior team rush rate",
+        "context_notes": "context",
     })
     st.dataframe(
         _style_table(table, highlight_col="O-line score"),
@@ -1713,6 +1712,21 @@ def save_drafted_player_ids(player_ids: set) -> None:
         logger.warning("Couldn't save draft tracker state (%s) -- this session's picks won't survive a reload.", exc)
 
 
+@st.cache_data(ttl=3600, show_spinner="Building the draft board (every skill-position player, full-season stats)...")
+def _load_scored_draft_board_pool(season: int) -> pd.DataFrame:
+    """The real, full-season-stats player pool scored by
+    `build_priority_board()` -- shared by Draft Board and QB Value
+    Finder, which both need the exact same thing. Defined once here at
+    module level (rather than each tab defining its own identical inner
+    `_load()` closure) so `st.cache_data` keys both tabs' calls to the
+    SAME cache entry: whichever tab a user opens first computes it, and
+    the other reuses that result instead of rebuilding it from scratch."""
+    from api.nfl_enrichment import build_draft_board_pool
+
+    pool = build_draft_board_pool(season)
+    return build_priority_board(pool)
+
+
 def render_draft_board() -> None:
     """Every real skill-position player, ranked for a snake draft -- see
     `build_draft_board_pool()`'s docstring in `api/nfl_enrichment.py` for
@@ -1726,7 +1740,6 @@ def render_draft_board() -> None:
         DEFAULT_YAHOO_DRAFT_REFERENCE_CSV,
         DRAFT_BOARD_POSITIONS,
         attach_yahoo_adp,
-        build_draft_board_pool,
         default_nfl_season,
         default_stats_season,
     )
@@ -1768,13 +1781,8 @@ def render_draft_board() -> None:
         key="draft_board_position",
     )
 
-    @st.cache_data(ttl=3600, show_spinner="Building the draft board (every skill-position player, full-season stats)...")
-    def _load(season: int) -> pd.DataFrame:
-        pool = build_draft_board_pool(season)
-        return build_priority_board(pool)
-
     try:
-        board = _load(int(season))
+        board = _load_scored_draft_board_pool(int(season))
     except Exception as exc:
         fallback_season = int(season) - 1
         st.warning(
@@ -1784,7 +1792,7 @@ def render_draft_board() -> None:
             icon="⚠️",
         )
         try:
-            board = _load(fallback_season)
+            board = _load_scored_draft_board_pool(fallback_season)
         except Exception as exc2:
             st.error(f"Couldn't build the draft board for {fallback_season} either ({exc2}).", icon="🚫")
             return
@@ -1897,7 +1905,7 @@ def render_qb_value_finder() -> None:
     "don't draft a QB early" strategy. Reuses Draft Board's exact pool-
     building pipeline; see `api/qb_value_analytics.py` for the scoring
     methodology."""
-    from api.nfl_enrichment import DEFAULT_YAHOO_DRAFT_REFERENCE_CSV, attach_yahoo_adp, build_draft_board_pool, default_nfl_season, default_stats_season
+    from api.nfl_enrichment import DEFAULT_YAHOO_DRAFT_REFERENCE_CSV, attach_yahoo_adp, default_nfl_season, default_stats_season
     from api.qb_value_analytics import compute_qb_adp_value
 
     st.subheader("QB Value Finder")
@@ -1922,13 +1930,8 @@ def render_qb_value_finder() -> None:
         value=default_stats_season(), step=1, key="qb_value_season",
     )
 
-    @st.cache_data(ttl=3600, show_spinner="Building the real, league-scored QB board...")
-    def _load(season: int) -> pd.DataFrame:
-        pool = build_draft_board_pool(season)
-        return build_priority_board(pool)
-
     try:
-        board = _load(int(season))
+        board = _load_scored_draft_board_pool(int(season))
     except Exception as exc:
         fallback_season = int(season) - 1
         st.warning(
@@ -1937,7 +1940,7 @@ def render_qb_value_finder() -> None:
             icon="⚠️",
         )
         try:
-            board = _load(fallback_season)
+            board = _load_scored_draft_board_pool(fallback_season)
         except Exception as exc2:
             st.error(f"Couldn't build the QB board for {fallback_season} either ({exc2}).", icon="🚫")
             return

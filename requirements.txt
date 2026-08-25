@@ -1,5 +1,6 @@
-pandas
-yfpy
-streamlit
-nfl_data_py
-requests
+pandas==1.5.3
+yfpy==17.0.0
+streamlit==1.62.0
+nfl_data_py==0.3.3
+requests==2.32.5
+altair==6.2.2
