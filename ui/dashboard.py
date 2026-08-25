@@ -1462,6 +1462,41 @@ def render_trade_finder(use_live: bool, credentials: Optional[dict]) -> None:
     st.dataframe(_style_table(display, highlight_col="fit"), use_container_width=True, hide_index=True)
 
 
+DRAFT_TRACKER_PATH = PROJECT_ROOT / "data" / "cache" / "draft_tracker.json"
+
+
+def load_drafted_player_ids() -> set:
+    """Real, persisted draft-tracker state -- who's been drafted (by
+    anyone) so far, across page reloads during a live draft.
+    `st.session_state` alone resets on every reload, which would be a real
+    problem mid-draft (a refreshed browser tab shouldn't lose an hour of
+    picks) -- this writes through to `data/cache/draft_tracker.json`
+    (already gitignored, same as the rest of `data/cache/`) so it survives
+    that. Returns an empty set (never raises) if the file doesn't exist or
+    is unreadable."""
+    if not DRAFT_TRACKER_PATH.is_file():
+        return set()
+    try:
+        with open(DRAFT_TRACKER_PATH) as f:
+            return set(json.load(f))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Couldn't read draft tracker state (%s) -- starting fresh.", exc)
+        return set()
+
+
+def save_drafted_player_ids(player_ids: set) -> None:
+    """Persists the draft tracker's current state. Never raises -- a
+    write failure (e.g. read-only filesystem on some hosting setups) logs
+    and leaves the in-session `st.session_state` copy as the source of
+    truth for the rest of this run rather than crashing the tab."""
+    try:
+        DRAFT_TRACKER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(DRAFT_TRACKER_PATH, "w") as f:
+            json.dump(sorted(player_ids), f)
+    except OSError as exc:
+        logger.warning("Couldn't save draft tracker state (%s) -- this session's picks won't survive a reload.", exc)
+
+
 def render_draft_board() -> None:
     """Every real skill-position player, ranked for a snake draft -- see
     `build_draft_board_pool()`'s docstring in `api/nfl_enrichment.py` for
@@ -1579,9 +1614,47 @@ def render_draft_board() -> None:
                 "skipped for this load."
             )
 
+    st.markdown("#### Live Draft Tracker")
+    st.caption(
+        "Mark players as drafted (by anyone, not just you) as your draft happens live -- the "
+        "board below excludes them automatically, so it always shows who's actually still "
+        "available. Saved to disk (`data/cache/draft_tracker.json`, gitignored -- never "
+        "committed), so it survives a page reload mid-draft."
+    )
+    if "drafted_player_ids" not in st.session_state:
+        st.session_state["drafted_player_ids"] = load_drafted_player_ids()
+    drafted_ids = st.session_state["drafted_player_ids"]
+
+    name_to_id = dict(zip(board["player_name"], board["player_id"]))
+    id_to_name = {v: k for k, v in name_to_id.items()}
+    currently_drafted_names = sorted(id_to_name[pid] for pid in drafted_ids if pid in id_to_name)
+
+    tracker_col, reset_col = st.columns([5, 1])
+    with tracker_col:
+        selected_names = st.multiselect(
+            "Drafted players", options=sorted(board["player_name"].unique()),
+            default=currently_drafted_names, key="draft_tracker_multiselect",
+        )
+    with reset_col:
+        st.write("")  # vertical alignment with the multiselect's label
+        if st.button("Reset draft", help="Clears every player marked drafted -- for a new draft/season."):
+            st.session_state["drafted_player_ids"] = set()
+            save_drafted_player_ids(set())
+            st.rerun()
+
+    new_drafted_ids = {name_to_id[n] for n in selected_names if n in name_to_id}
+    if new_drafted_ids != drafted_ids:
+        st.session_state["drafted_player_ids"] = new_drafted_ids
+        save_drafted_player_ids(new_drafted_ids)
+        drafted_ids = new_drafted_ids
+
+    if drafted_ids:
+        st.caption(f"{len(drafted_ids)} player(s) marked drafted -- excluded from the board below.")
+        board = board[~board["player_id"].isin(drafted_ids)]
+
     filtered = board[board["display_position"].isin(position_filter)]
     if filtered.empty:
-        st.info("No players match the selected position filter.")
+        st.info("No players match the selected position filter (or every one of them has been drafted).")
         return
 
     columns = ["player_name", "editorial_team_abbr", "display_position", "priority_score"]

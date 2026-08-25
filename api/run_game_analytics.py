@@ -59,9 +59,12 @@ Known gaps
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 from api.nfl_enrichment import (
     _normalize_team_abbr,
@@ -119,21 +122,36 @@ def compute_team_run_rate(season: int) -> pd.DataFrame:
     ]]
 
 
+_RB_WORKLOAD_COLUMNS = (
+    "player_id", "player_display_name", "recent_team", "week", "position",
+    "carries", "targets", "receptions", "rushing_yards", "receiving_yards",
+)
+
+
 def load_rb_workload_raw(season: int) -> pd.DataFrame:
     """Real per-week RB stat lines (carries, targets, receptions, rushing/
     receiving yards) -- a separate, narrow loader rather than widening
     `load_weekly_data()` (which only ever needed target_share/fantasy_points
     for its existing callers), matching this project's existing pattern
-    (see `load_season_stat_totals()`)."""
+    (see `load_season_stat_totals()`).
+
+    Falls back to deriving these same columns from play-by-play (see
+    `api/nfl_enrichment.py`'s `derive_player_week_stats_from_pbp()`) when
+    nflverse's separate aggregated "player_stats" release isn't out yet
+    for `season` -- the same real, confirmed gap Draft Board's stat
+    totals fall back for.
+    """
     import nfl_data_py as nfl
 
-    return nfl.import_weekly_data(
-        [season],
-        columns=[
-            "player_id", "player_display_name", "recent_team", "week", "position",
-            "carries", "targets", "receptions", "rushing_yards", "receiving_yards",
-        ],
-    )
+    try:
+        return nfl.import_weekly_data([season], columns=list(_RB_WORKLOAD_COLUMNS))
+    except Exception as exc:
+        from api.nfl_enrichment import derive_player_week_stats_from_pbp
+
+        logger.warning(
+            "import_weekly_data(%s) failed (%s) -- deriving RB workload from play-by-play instead.", season, exc
+        )
+        return derive_player_week_stats_from_pbp(season)[list(_RB_WORKLOAD_COLUMNS)]
 
 
 def _percentile_rank(series: pd.Series, higher_is_better: bool = True) -> pd.Series:

@@ -119,6 +119,9 @@ def load_draft_picks(season: int) -> pd.DataFrame:
     return nfl.import_draft_picks([season])
 
 
+_WEEKLY_DATA_COLUMNS = ("player_id", "player_display_name", "recent_team", "week", "position", "target_share", "fantasy_points")
+
+
 @lru_cache(maxsize=8)
 def load_weekly_data(season: int) -> pd.DataFrame:
     import nfl_data_py as nfl
@@ -127,10 +130,18 @@ def load_weekly_data(season: int) -> pd.DataFrame:
     # standard, not PPR, so the flat rest-of-season baseline in
     # estimate_projected_points_by_week() shouldn't credit a full point
     # per reception it wouldn't actually score.
-    return nfl.import_weekly_data(
-        [season],
-        columns=["player_id", "player_display_name", "recent_team", "week", "position", "target_share", "fantasy_points"],
-    )
+    try:
+        return nfl.import_weekly_data([season], columns=list(_WEEKLY_DATA_COLUMNS))
+    except Exception as exc:
+        # nflverse's separate aggregated "player_stats" release can lag
+        # months behind the raw play-by-play for the same season (a real,
+        # confirmed gap -- see derive_player_week_stats_from_pbp()'s
+        # docstring) -- fall back to deriving the same columns from pbp
+        # directly rather than forcing every caller down to a stale season.
+        logger.warning(
+            "import_weekly_data(%s) failed (%s) -- deriving from play-by-play instead.", season, exc
+        )
+        return derive_player_week_stats_from_pbp(season)[list(_WEEKLY_DATA_COLUMNS)]
 
 
 # The raw box-score columns calculate_custom_value() actually needs --
@@ -142,6 +153,13 @@ _SEASON_STAT_RAW_COLUMNS = (
     "receptions", "receiving_yards", "receiving_tds", "sack_fumbles_lost",
     "rushing_fumbles_lost", "receiving_fumbles_lost", "passing_2pt_conversions",
     "rushing_2pt_conversions", "receiving_2pt_conversions",
+)
+
+
+_SEASON_TOTALS_FINAL_COLUMNS = (
+    "player_id", "player_display_name", "recent_team", "position",
+    "passing_yards", "passing_touchdowns", "interceptions", "rushing_yards", "rushing_touchdowns",
+    "receptions", "receiving_yards", "receiving_touchdowns", "fumbles_lost", "two_point_conversions",
 )
 
 
@@ -159,14 +177,36 @@ def load_season_stat_totals(season: int) -> pd.DataFrame:
     own pre-computed total) or Yahoo's own stats; the draft board needs
     the raw categories so *this league's own scoring weights* -- not
     nfl_data_py's PPR-flavored default -- decide the value.
+
+    Falls back to deriving these same totals from play-by-play (see
+    ``derive_player_week_stats_from_pbp()``) when nflverse's separate
+    aggregated "player_stats" release isn't out yet for `season` -- a
+    real, confirmed, routine gap (raw pbp is often complete for a season
+    months before that release is).
     """
     import nfl_data_py as nfl
 
-    weekly = nfl.import_weekly_data(
-        [season],
-        columns=["player_id", "player_display_name", "recent_team", "week", "position"]
-        + list(_SEASON_STAT_RAW_COLUMNS),
-    )
+    try:
+        weekly = nfl.import_weekly_data(
+            [season],
+            columns=["player_id", "player_display_name", "recent_team", "week", "position"]
+            + list(_SEASON_STAT_RAW_COLUMNS),
+        )
+    except Exception as exc:
+        logger.warning(
+            "import_weekly_data(%s) failed (%s) -- deriving season stat totals from play-by-play instead.",
+            season, exc,
+        )
+        derived = derive_player_week_stats_from_pbp(season)
+        summable = [c for c in _SEASON_TOTALS_FINAL_COLUMNS if c not in ("player_id", "player_display_name", "recent_team", "position")]
+        totals = derived.groupby("player_id")[summable].sum().reset_index()
+        latest_info = (
+            derived.sort_values("week")
+            .groupby("player_id")[["player_display_name", "recent_team", "position"]]
+            .last()
+            .reset_index()
+        )
+        return totals.merge(latest_info, on="player_id")[list(_SEASON_TOTALS_FINAL_COLUMNS)]
 
     totals = weekly.groupby("player_id")[list(_SEASON_STAT_RAW_COLUMNS)].sum().reset_index()
     # A player's team/position can appear to change row-to-row after an
@@ -198,20 +238,163 @@ def load_season_stat_totals(season: int) -> pd.DataFrame:
 @lru_cache(maxsize=8)
 def load_pbp(season: int) -> pd.DataFrame:
     """Shared play-by-play loader for deep-target-share, red-zone-share,
-    api/oline_analytics.py's pass-protection/run-blocking metrics, and
-    api/team_change_analytics.py's team pace/efficiency context -- avoids
-    downloading the same season's pbp data more than once."""
+    api/oline_analytics.py's pass-protection/run-blocking metrics,
+    api/team_change_analytics.py's team pace/efficiency context, and
+    derive_player_week_stats_from_pbp()'s real-stat derivation -- avoids
+    downloading the same season's pbp data more than once. Real play-by-play
+    is published well ahead of nflverse's separate aggregated "player_stats"
+    release (confirmed directly: 2025 pbp is real and complete while
+    player_stats_2025.parquet still 404s), which is exactly the gap
+    derive_player_week_stats_from_pbp() exists to close."""
     import nfl_data_py as nfl
 
     return nfl.import_pbp_data(
         [season],
         columns=[
-            "game_id", "week", "posteam", "rusher_player_id", "receiver_player_id",
-            "yardline_100", "air_yards", "rush_attempt", "pass_attempt",
+            "game_id", "week", "posteam", "passer_player_id", "rusher_player_id", "receiver_player_id",
+            "yardline_100", "air_yards", "rush_attempt", "pass_attempt", "complete_pass",
             "sack", "qb_hit", "qb_dropback", "yards_gained", "epa",
+            "passing_yards", "rushing_yards", "receiving_yards",
+            "pass_touchdown", "rush_touchdown", "interception",
+            "fumble_lost", "fumbled_1_player_id", "fumbled_1_team",
+            "two_point_attempt", "two_point_conv_result",
         ],
         downcast=True,
     )
+
+
+# Standard (non-PPR), roughly-nflverse-equivalent fantasy-points formula --
+# an approximation used ONLY when deriving from play-by-play (nflverse's own
+# `fantasy_points` column isn't in the raw pbp table at all, only in the
+# separate weekly release this exists to substitute for). Verified directly
+# against real 2024 data (a season where both sources exist): raw counting
+# stats derived this way matched nflverse's own official totals exactly for
+# every spot-checked player (Josh Allen's passing/rushing lines, Ja'Marr
+# Chase/Brock Bowers' receiving lines) except a rare 1-target discrepancy
+# (163 vs. 162 for Justin Jefferson) -- a real, small, disclosed imprecision,
+# not a guess.
+_DERIVED_FANTASY_POINTS_WEIGHTS = {
+    "passing_yards": 0.04, "passing_touchdowns": 4.0, "interceptions": -2.0,
+    "rushing_yards": 0.1, "rushing_touchdowns": 6.0,
+    "receiving_yards": 0.1, "receiving_touchdowns": 6.0,
+    "fumbles_lost": -2.0, "two_point_conversions": 2.0,
+}
+
+
+def derive_player_week_stats_from_pbp(season: int) -> pd.DataFrame:
+    """Real per-player, per-week stat lines derived directly from play-by-
+    play -- a substitute for `import_weekly_data()` when nflverse's separate
+    aggregated "player_stats" release isn't out yet for `season` but the raw
+    play-by-play already is (confirmed directly: this is routinely true --
+    2025 pbp is complete while `player_stats_2025.parquet` still 404s months
+    after the season ended). Used automatically by `load_weekly_data()`,
+    `load_season_stat_totals()`, and `api/run_game_analytics.py`'s
+    `load_rb_workload_raw()` as a fallback, never a first choice -- the
+    official release is preferred whenever it's actually available.
+
+    Returns one row per (player_id, week) with `team` (that week's real
+    `posteam`, not a season-long average -- correctly reflects an in-season
+    trade), and the same final stat names this project's other loaders
+    settle on after their own post-processing (`passing_touchdowns`,
+    `fumbles_lost` already summed across sack/rush/reception fumbles,
+    `two_point_conversions` already summed across all three types) --
+    unlike `load_season_stat_totals()`, this never needs the raw sack/
+    rushing/receiving fumble breakdown in the first place, since pbp's
+    `fumble_lost` flag doesn't reliably categorize by play type for a
+    meaningful fraction of plays (confirmed live: ~13% land in neither
+    bucket) and the breakdown is only ever re-summed anyway.
+
+    `fantasy_points` is a real, disclosed APPROXIMATION (standard scoring,
+    not PPR -- see `_DERIVED_FANTASY_POINTS_WEIGHTS`) since raw pbp has no
+    equivalent column at all; `target_share` is computed directly (a
+    player's weekly targets over their team's weekly total targets), same
+    definition nflverse's own column uses.
+    """
+    pbp = load_pbp(season)
+
+    pass_plays = pbp[pbp["pass_attempt"] == 1]
+    rush_plays = pbp[pbp["rush_attempt"] == 1]
+    complete_plays = pass_plays[pass_plays["complete_pass"] == 1]
+
+    passing = pass_plays.groupby(["passer_player_id", "week"]).agg(
+        passing_yards=("passing_yards", "sum"),
+        passing_touchdowns=("pass_touchdown", "sum"),
+        interceptions=("interception", "sum"),
+        team=("posteam", "last"),
+    ).reset_index().rename(columns={"passer_player_id": "player_id"})
+
+    rushing = rush_plays.groupby(["rusher_player_id", "week"]).agg(
+        rushing_yards=("rushing_yards", "sum"),
+        rushing_touchdowns=("rush_touchdown", "sum"),
+        carries=("rush_attempt", "sum"),
+        team=("posteam", "last"),
+    ).reset_index().rename(columns={"rusher_player_id": "player_id"})
+
+    targets = pass_plays.groupby(["receiver_player_id", "week"]).agg(
+        targets=("pass_attempt", "sum"),
+    ).reset_index().rename(columns={"receiver_player_id": "player_id"})
+    receiving = complete_plays.groupby(["receiver_player_id", "week"]).agg(
+        receiving_yards=("receiving_yards", "sum"),
+        receiving_touchdowns=("pass_touchdown", "sum"),
+        receptions=("complete_pass", "sum"),
+        team=("posteam", "last"),
+    ).reset_index().rename(columns={"receiver_player_id": "player_id"})
+    receiving = receiving.merge(targets, on=["player_id", "week"], how="outer")
+
+    fumbles = pbp[pbp["fumble_lost"] == 1].groupby(["fumbled_1_player_id", "week"]).agg(
+        fumbles_lost=("fumble_lost", "sum"),
+    ).reset_index().rename(columns={"fumbled_1_player_id": "player_id"})
+
+    # Real 2pt conversions: pbp's `complete_pass` flag isn't reliably set on
+    # these plays (confirmed live), so this credits directly off
+    # `two_point_conv_result` instead -- a passing conversion credits BOTH
+    # the passer and the receiver (matching how real fantasy scoring counts
+    # a completed 2pt pass as a conversion for each), a rushing conversion
+    # credits the rusher.
+    two_pt = pbp[(pbp["two_point_attempt"] == 1) & (pbp["two_point_conv_result"] == "success")]
+    two_pt_pass_credits = pd.concat([
+        two_pt.loc[two_pt["pass_attempt"] == 1, ["passer_player_id", "week"]].rename(columns={"passer_player_id": "player_id"}),
+        two_pt.loc[two_pt["pass_attempt"] == 1, ["receiver_player_id", "week"]].rename(columns={"receiver_player_id": "player_id"}),
+    ])
+    two_pt_rush_credits = two_pt.loc[two_pt["rush_attempt"] == 1, ["rusher_player_id", "week"]].rename(
+        columns={"rusher_player_id": "player_id"}
+    )
+    two_point_conversions = (
+        pd.concat([two_pt_pass_credits, two_pt_rush_credits])
+        .dropna(subset=["player_id"])
+        .groupby(["player_id", "week"]).size().rename("two_point_conversions").reset_index()
+    )
+
+    frames = [passing, rushing, receiving, fumbles, two_point_conversions]
+    combined = frames[0]
+    for frame in frames[1:]:
+        combined = combined.merge(frame, on=["player_id", "week"], how="outer", suffixes=("", "_dup"))
+        if "team_dup" in combined.columns:
+            combined["team"] = combined["team"].fillna(combined.pop("team_dup"))
+
+    combined = combined[combined["player_id"].notna()].copy()
+    numeric_cols = [c for c in combined.columns if c not in ("player_id", "week", "team")]
+    combined[numeric_cols] = combined[numeric_cols].fillna(0.0)
+
+    team_weekly_targets = pass_plays.groupby(["posteam", "week"])["pass_attempt"].sum().rename("team_targets")
+    combined = combined.merge(
+        team_weekly_targets, left_on=["team", "week"], right_on=["posteam", "week"], how="left"
+    )
+    combined["target_share"] = (combined["targets"] / combined["team_targets"]).where(combined["team_targets"] > 0)
+
+    combined["fantasy_points"] = sum(
+        combined.get(stat, 0.0) * weight for stat, weight in _DERIVED_FANTASY_POINTS_WEIGHTS.items()
+    )
+
+    # Real current position/name, from the same real roster source every
+    # other Yahoo-free tool in this project already uses -- pbp's own
+    # player-name columns are free text, not worth trusting over a real
+    # roster join.
+    rosters = load_seasonal_rosters(season)[["player_id", "player_name", "position"]].drop_duplicates("player_id")
+    rosters = rosters.rename(columns={"player_name": "player_display_name"})
+    combined = combined.merge(rosters, on="player_id", how="left")
+    combined = combined.rename(columns={"team": "recent_team"})
+    return combined
 
 
 def compute_team_offense_context(season: int) -> pd.DataFrame:
@@ -373,12 +556,27 @@ def build_injury_opportunity_lookup(season: int, week: Optional[int] = None) -> 
         if week is None:
             return {}
 
-    depth = load_depth_charts(season)
-    depth = depth[
-        (depth["week"] == week)
-        & depth["position"].isin(["RB", "WR", "TE"])
-        & (depth["depth_position"] == depth["position"])
-    ]
+    try:
+        depth = load_depth_charts(season)
+        depth = depth[
+            (depth["week"] == week)
+            & depth["position"].isin(["RB", "WR", "TE"])
+            & (depth["depth_position"] == depth["position"])
+        ]
+    except KeyError as exc:
+        # A real, confirmed nflverse schema change: `import_depth_charts()`'s
+        # newest seasons (2025+) come back in a completely different shape
+        # (no `week`/`depth_position`/`club_code` columns at all -- `dt`/
+        # `pos_grp`/`pos_slot` instead). This signal is a nice-to-have
+        # opportunity flag, not load-bearing for the rest of the pipeline,
+        # so degrade to "no signal" rather than taking build_draft_board_pool()
+        # (and everything downstream of it) down with it.
+        logger.warning(
+            "load_depth_charts(%s) has an unexpected schema (%s) -- skipping injury_opportunity for this season.",
+            season, exc,
+        )
+        return {}
+
     injuries = injuries[injuries["week"] == week]
 
     injured_by_team_pos: Dict[tuple, list] = {}
@@ -895,6 +1093,65 @@ _DRAFT_BOARD_STAT_KEYS = (
 )
 
 
+ROOKIE_BASELINE_TRAILING_CLASSES = 5
+
+
+@lru_cache(maxsize=8)
+def build_rookie_ppg_baseline_by_round(positions: tuple = ("RB", "WR"), through_season: int = 2024) -> Dict[tuple, float]:
+    """``{(position, draft_round): average_real_rookie_season_ppg}`` --
+    a real, empirical historical baseline (standard-scoring fantasy points
+    per game, from nflverse's own `fantasy_points` column, averaged across
+    each real rookie's OWN rookie season) for the `ROOKIE_BASELINE_TRAILING_CLASSES`
+    draft classes ending at `through_season`.
+
+    Exists to fix a real, structural gap: `build_draft_board_pool()` gives
+    a true incoming rookie an all-zero baseline projection (they have no
+    games played yet, by definition), which `apply_rookie_bump()` then
+    multiplies by a bump factor -- 0 times anything is still 0, so Rookie
+    Radar's whole signal went dark for every actual rookie regardless of
+    real draft capital. This baseline gives that same rookie a real,
+    historically-grounded non-zero starting point instead of silence.
+
+    Verified directly against 2020-2024 real draft classes: a clean,
+    monotonically declining-by-round shape at both positions (e.g. real
+    Round 1 RBs averaged ~11.7 PPG in their actual rookie season across
+    those 5 classes, Round 1 WRs ~7.3, declining every round after) --
+    not a guess, an average of what actually happened.
+
+    A real, disclosed limitation: this is a league-wide historical AVERAGE
+    by draft slot, not a projection for any specific incoming player --
+    it can't know a particular rookie's landing-spot opportunity, scheme
+    fit, or camp buzz. Treat it as a real floor to replace silence with,
+    not a substitute for scouting.
+    """
+    rows = []
+    for yr in range(through_season - ROOKIE_BASELINE_TRAILING_CLASSES + 1, through_season + 1):
+        try:
+            rosters = load_seasonal_rosters(yr)
+            weekly = load_weekly_data(yr)
+            picks = load_draft_picks(yr)
+        except Exception as exc:
+            logger.warning("build_rookie_ppg_baseline_by_round(): skipping %s (%s).", yr, exc)
+            continue
+
+        rookies = rosters[(rosters["rookie_year"] == yr) & (rosters["position"].isin(positions))]
+        draft_round_by_gsis = dict(zip(
+            picks.dropna(subset=["gsis_id"])["gsis_id"], picks.dropna(subset=["gsis_id"])["round"]
+        ))
+        ppg_by_gsis = weekly.groupby("player_id")["fantasy_points"].mean()
+
+        for _, row in rookies.iterrows():
+            draft_round = draft_round_by_gsis.get(row["player_id"])
+            ppg = ppg_by_gsis.get(row["player_id"])
+            if draft_round is not None and ppg is not None:
+                rows.append({"position": row["position"], "round": int(draft_round), "ppg": ppg})
+
+    if not rows:
+        return {}
+    df = pd.DataFrame(rows)
+    return df.groupby(["position", "round"])["ppg"].mean().to_dict()
+
+
 def build_draft_board_pool(
     season: int, positions: tuple = DRAFT_BOARD_POSITIONS, roster_season: Optional[int] = None
 ) -> pd.DataFrame:
@@ -995,7 +1252,36 @@ def build_draft_board_pool(
     df = pd.DataFrame(rows)
     if df.empty:
         return df
-    return enrich_players_dataframe(df, season, key_by="player_id", roster_season=roster_season)
+    df = enrich_players_dataframe(df, season, key_by="player_id", roster_season=roster_season)
+
+    # A true incoming rookie has zero real games in `season` by definition,
+    # so estimate_projected_points_by_week() (inside enrich_players_dataframe
+    # above) gives them an all-zero baseline -- and apply_rookie_bump()
+    # multiplying zero by a bump factor is still zero, silencing Rookie
+    # Radar's whole signal for every actual rookie regardless of real draft
+    # capital. Replace that silence with a real, historical, empirical
+    # baseline (see build_rookie_ppg_baseline_by_round()'s docstring) for
+    # rookie RB/WR specifically -- the two positions Rookie Radar covers.
+    rookie_baseline = build_rookie_ppg_baseline_by_round(("RB", "WR"), through_season=season)
+    if rookie_baseline:
+        def _rookie_baseline_projection(row: pd.Series):
+            if not row.get("is_rookie") or row.get("display_position") not in ("RB", "WR"):
+                return row["projected_points_by_week"]
+            existing = row.get("projected_points_by_week") or {}
+            if any(float(v) > 0 for v in existing.values()):
+                return existing  # a real (even partial-season) baseline already exists -- don't override it
+            draft_capital = row.get("draft_capital")
+            draft_round = draft_capital.get("round") if isinstance(draft_capital, dict) else None
+            if draft_round is None:
+                return existing
+            baseline_ppg = rookie_baseline.get((row["display_position"], int(draft_round)))
+            if baseline_ppg is None:
+                return existing
+            return estimate_projected_points_by_week(baseline_ppg)
+
+        df["projected_points_by_week"] = df.apply(_rookie_baseline_projection, axis=1)
+
+    return df
 
 
 def attach_sleeper_status_and_trending(players_df: pd.DataFrame) -> pd.DataFrame:

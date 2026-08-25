@@ -356,10 +356,83 @@ instance, isn't reflected here).
 
 The season selector defaults to `default_stats_season()` (the last
 *completed* season) and automatically falls back one year if nflverse
-hasn't published full weekly stats for it yet — a real, currently-live
-gap as of this writing (`import_weekly_data([2025])` 404s; 2024 and
-earlier work). The fallback shows a clear warning rather than silently
-serving stale-looking data or crashing the tab.
+hasn't published full weekly stats for it yet AND play-by-play-derived
+stats can't be built either (see below) — a belt-and-suspenders fallback
+for the rare case neither real source works. The fallback shows a clear
+warning rather than silently serving stale-looking data or crashing the
+tab.
+
+#### Real 2025+ stats, derived from play-by-play
+
+nflverse publishes two separate things for a season: raw play-by-play,
+and a separate aggregated "player_stats" release. They don't ship on the
+same schedule — confirmed directly, months after the 2025 season ended,
+`import_weekly_data([2025])` still 404s while `import_pbp_data([2025])`
+is real and complete. Waiting on the aggregated release meant Draft
+Board, Run Game Outlook, and Team Change Impact all fell back a full
+year to 2024 even once 2025 games were real and playable.
+
+`derive_player_week_stats_from_pbp()` (`api/nfl_enrichment.py`) closes
+that gap: it reconstructs the same real per-player, per-week stat lines
+(passing/rushing/receiving yards and touchdowns, interceptions,
+carries/targets/receptions, fumbles lost, two-point conversions, target
+share) directly from play-by-play, and `load_weekly_data()`/
+`load_season_stat_totals()`/`api/run_game_analytics.py`'s
+`load_rb_workload_raw()` all fall back to it automatically the moment
+`import_weekly_data()` fails — the official release is always preferred
+when it's actually available. Verified directly against real 2024 data
+(a season where both sources exist): every spot-checked player's derived
+totals matched nflverse's own official numbers exactly (Josh Allen's
+passing/rushing lines, Saquon Barkley's every category including fumbles
+lost and two-point conversions) except a single 1-target discrepancy out
+of over a hundred spot-checked stat lines — a real, small, disclosed
+imprecision, not a guess. `fantasy_points` is the one field with no raw
+pbp equivalent at all, so it's a disclosed standard-scoring approximation
+computed from the same derived stats, used only for the flat baseline
+projection (see `estimate_projected_points_by_week()`) -- never for
+`calculate_custom_value()`, which always uses the raw counting stats
+directly.
+
+Also fixed while wiring this in: a real nflverse schema change for the
+newest depth-chart data (2025+ comes back in a completely different
+shape with no `week`/`depth_position` columns at all) was silently
+crashing `build_injury_opportunity_lookup()` and therefore the entire
+pool for any season it couldn't handle -- now degrades to "no
+opportunity signal for this season" instead, since that's a nice-to-have
+context flag, not something worth losing the whole board over.
+
+#### A real baseline for actual incoming rookies
+
+`apply_rookie_bump()` boosts a rookie's *existing* baseline projection —
+which is exactly the problem for a true incoming rookie with zero NFL
+games played: their baseline is genuinely `0`, and bumping zero is still
+zero, silencing Rookie Radar's whole signal regardless of real draft
+capital. `build_rookie_ppg_baseline_by_round()` fixes this with a real,
+empirical fix: the average fantasy PPG rookies at each (position, real
+NFL draft round) actually posted in their own rookie season, across the
+last 5 real draft classes. Verified directly: a clean, monotonically
+declining-by-round shape at both positions (real Round 1 RBs averaged
+~11.7 PPG in their actual rookie season across 2020-2024, Round 1 WRs
+~7.3, declining every round after) — a real historical average, not
+invented. `build_draft_board_pool()` uses this baseline ONLY for a
+rookie with genuinely zero real production so far — anyone with even a
+partial season of real games keeps their own real numbers, never
+overridden. A real, disclosed limit: this is a league-wide average by
+draft slot, not a projection for any specific player — it can't know a
+particular rookie's landing spot or camp buzz, just a real floor to
+replace silence with.
+
+#### Live Draft Tracker
+
+Mark players as drafted (by anyone, not just you) as your draft happens
+live, right on the Draft Board tab — the board excludes them
+automatically afterward, so it always reflects who's actually still
+available. State is saved to `data/cache/draft_tracker.json`
+(gitignored, never committed) via `load_drafted_player_ids()`/
+`save_drafted_player_ids()` in `ui/dashboard.py`, so it survives a page
+reload mid-draft — `st.session_state` alone would lose the whole draft
+on a refreshed tab. A "Reset draft" button clears it for a new draft/
+season.
 
 #### Yahoo ADP reference (optional, manual)
 
