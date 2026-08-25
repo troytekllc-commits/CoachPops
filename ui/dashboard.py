@@ -1753,23 +1753,33 @@ def render_draft_board() -> None:
         "projection for the upcoming season on its own -- see \"FantasyPros\" below for a real "
         "external projection where it's available -- it's a serious, defensible starting point for "
         "ranking players, not a finished cheat sheet that already knows about every offseason "
-        "move. Needs zero Yahoo access, unlike every other player-level tab."
+        "move. Needs zero Yahoo access, unlike every other player-level tab. **\"our ADP "
+        "(implied)\"** is this board's own overall rank (1st, 2nd, 3rd best player, across every "
+        "position) by that real value -- on the same overall-draft-order scale real ADP is "
+        "measured on, so it's directly comparable to Yahoo ADP/FantasyPros ADP below, not just "
+        "another position-scoped rank."
     )
     has_yahoo_adp_reference = DEFAULT_YAHOO_DRAFT_REFERENCE_CSV.is_file()
     if has_yahoo_adp_reference:
         st.caption(
             "Also shown: this league's real Yahoo Fantasy Plus ADP/tier (from your own premium "
-            "cheat sheet export) alongside where this board ranks each player, so you can spot "
-            "where the two disagree. Name-matched, not an ID join -- see README for how to refresh "
-            "it. Expect real, harmless misses for this year's rookies (not in last season's stats)."
+            "cheat sheet export). \"value vs. Yahoo ADP (picks)\" is a real, literal pick-count "
+            "gap (Yahoo ADP minus \"our ADP (implied)\") -- positive means this board's real value "
+            "says you can wait that many picks past where Yahoo's real drafters take them; "
+            "negative flags the opposite. \"(within pos.)\" is the same idea, but ranked against "
+            "same-position peers only rather than the whole board. Name-matched, not an ID join -- "
+            "see README for how to refresh it. Expect real, harmless misses for this year's "
+            "rookies (not in last season's stats)."
         )
     st.caption(
         "Also shown, where available: a real, live third-party check from FantasyPros -- their "
-        "own season-long projected points and expert-consensus rank/tier for the upcoming season, "
-        "joined by a real Yahoo ID crosswalk (not name-matched). The API key behind this is "
-        "FantasyPros' free tier, which caps real coverage at roughly the top 10 players per "
-        "position (~60 total) -- expect this to be populated near the top of the board and blank "
-        "further down; see `api/fantasypros.py` for the exact, discovered limitation."
+        "own season-long projected points and expert-consensus rank (ECR, their own closest "
+        "analog to an overall ADP) for the upcoming season, joined by a real Yahoo ID crosswalk "
+        "(not name-matched). \"value vs. FantasyPros ADP\" is the same real pick-count-gap idea as "
+        "the Yahoo one above, against FantasyPros' ECR instead. Coverage depends on the configured "
+        "API key's tier -- a full player pool on a paid key, or roughly the top 10 players per "
+        "position on the free tier (blank further down in that case); see `api/fantasypros.py` "
+        "for exactly how that's detected."
     )
 
     season = st.number_input(
@@ -1798,6 +1808,16 @@ def render_draft_board() -> None:
             return
 
     board = _with_display_name(board)
+    # "Our implied ADP" -- this board's own overall (cross-position) rank
+    # by real league-scoring value, on the SAME scale real ADP is
+    # measured on (1st, 2nd, 3rd... best player overall) rather than the
+    # within-position rank below. This is what makes a real, direct
+    # "when should I draft them" comparison possible against Yahoo ADP
+    # (a real overall pick number) and FantasyPros' overall ECR (a real
+    # expert-consensus overall rank) -- always computed, not gated behind
+    # either reference being available, since it's meaningful on its own.
+    board["our_overall_rank"] = board["priority_score"].rank(ascending=False, method="min").astype(int)
+
     if has_yahoo_adp_reference:
         board = attach_yahoo_adp(board)
         board["our_position_rank"] = board.groupby("display_position")["priority_score"].rank(
@@ -1807,6 +1827,12 @@ def render_draft_board() -> None:
         # (a possible value pick); negative = Yahoo's ADP has them going
         # earlier than this board would -- a possible overdraft/avoid.
         board["value_vs_yahoo_adp"] = board["yahoo_position_rank"] - board["our_position_rank"]
+        # Same idea, but on the real overall-pick-number scale rather than
+        # within-position rank -- literally "how many picks of value":
+        # positive means Yahoo's real ADP has them going later than our
+        # overall rank suggests they're worth (a concrete "you can wait
+        # this many picks" number), negative means the opposite.
+        board["value_vs_yahoo_adp_overall"] = board["yahoo_adp"] - board["our_overall_rank"]
 
     fetch_fantasypros = st.checkbox(
         "Fetch live FantasyPros projections/rankings", value=True, key="draft_board_fantasypros",
@@ -1832,6 +1858,11 @@ def render_draft_board() -> None:
         if bundle and "error" not in bundle:
             board = join_fantasypros_data(board, bundle["rankings"], bundle["projections"], yahoo_id_column="yahoo_id")
             has_fantasypros = True
+            # Same overall-scale comparison as value_vs_yahoo_adp_overall
+            # above, but against FantasyPros' own real expert-consensus
+            # OVERALL rank (rank_ecr) rather than their position rank --
+            # ECR is FantasyPros' closest analog to an overall ADP number.
+            board["value_vs_fantasypros_ecr"] = board["fantasypros_rank_ecr"] - board["our_overall_rank"]
         else:
             st.caption(
                 f"⚠️ FantasyPros fetch failed ({bundle.get('error') if bundle else 'unknown error'}) -- "
@@ -1881,14 +1912,23 @@ def render_draft_board() -> None:
         st.info("No players match the selected position filter (or every one of them has been drafted).")
         return
 
-    columns = ["player_name", "editorial_team_abbr", "display_position", "priority_score"]
-    rename = {"editorial_team_abbr": "team", "display_position": "pos"}
+    columns = ["player_name", "editorial_team_abbr", "display_position", "priority_score", "our_overall_rank"]
+    rename = {
+        "editorial_team_abbr": "team", "display_position": "pos",
+        "our_overall_rank": "our ADP (implied)",
+    }
     if has_yahoo_adp_reference:
-        columns += ["yahoo_adp", "yahoo_tier", "value_vs_yahoo_adp"]
-        rename["value_vs_yahoo_adp"] = "value vs. Yahoo ADP"
+        columns += ["yahoo_adp", "yahoo_tier", "value_vs_yahoo_adp_overall", "value_vs_yahoo_adp"]
+        rename["value_vs_yahoo_adp_overall"] = "value vs. Yahoo ADP (picks)"
+        rename["value_vs_yahoo_adp"] = "value vs. Yahoo ADP (within pos.)"
     if has_fantasypros:
-        columns += ["fantasypros_projected_points", "fantasypros_pos_rank", "fantasypros_tier"]
+        columns += [
+            "fantasypros_projected_points", "fantasypros_rank_ecr", "value_vs_fantasypros_ecr",
+            "fantasypros_pos_rank", "fantasypros_tier",
+        ]
         rename["fantasypros_projected_points"] = "FantasyPros proj. pts"
+        rename["fantasypros_rank_ecr"] = "FantasyPros ADP (ECR)"
+        rename["value_vs_fantasypros_ecr"] = "value vs. FantasyPros ADP"
         rename["fantasypros_pos_rank"] = "FantasyPros pos rank"
         rename["fantasypros_tier"] = "FantasyPros tier"
     columns += ["priority_signals", "priority_cautions"]

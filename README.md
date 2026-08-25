@@ -576,14 +576,35 @@ reload mid-draft — `st.session_state` alone would lose the whole draft
 on a refreshed tab. A "Reset draft" button clears it for a new draft/
 season.
 
+#### "Our ADP (implied)" — a real, direct comparison against Yahoo/FantasyPros ADP
+
+Every player's `priority_score` already ranks them within their own
+position (`our_position_rank`) — useful for "who's the better WR3
+option," but not directly comparable to real ADP, which is measured on
+one overall draft order across every position at once (Yahoo's real ADP
+means "picked Nth overall," not "Nth among just the RBs"). `our_overall_rank`
+closes that gap: this board's own overall rank (1st, 2nd, 3rd best real
+player, across every position), on the exact same scale Yahoo ADP and
+FantasyPros' ECR are measured on — shown as **"our ADP (implied)."**
+
+That shared scale is what makes a real, literal comparison possible:
+**"value vs. Yahoo ADP (picks)"** and **"value vs. FantasyPros ADP"** are
+each just (that source's overall rank/ADP) minus (`our_overall_rank`) —
+a genuine pick-count gap, not just a rank delta. A `+20` there means "this
+board's real value says you can wait about 20 picks past where that
+source actually drafts them" — a concrete, actionable number for when to
+actually take them, not just a directional "better/worse" signal.
+`"value vs. Yahoo ADP (within pos.)"` is kept alongside it as the older,
+position-scoped comparison (this board's `our_position_rank` vs. Yahoo's
+own `yahoo_position_rank`) — still useful for "who's rated too
+high/low relative to same-position peers," a different question than
+"how many picks of value."
+
 #### Yahoo ADP reference (optional, manual)
 
 If `data/yahoo_draft_reference.csv` exists, Draft Board also shows this
-league's real Yahoo Fantasy Plus ADP (average draft position), tier, and
-a **"value vs. Yahoo ADP"** column (this board's own position rank minus
-Yahoo's — positive means this board likes the player more than Yahoo's
-drafters do; negative means Yahoo's ADP has them going earlier than this
-board would).
+league's real Yahoo Fantasy Plus ADP (average draft position) and tier
+alongside the comparisons above.
 
 This file has no API behind it — it's a one-time, manually transcribed
 snapshot of a real Yahoo Fantasy Plus premium "Cheat Sheet" PDF export
