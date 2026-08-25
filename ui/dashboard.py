@@ -1689,19 +1689,19 @@ def main() -> None:
         st.header("Data source")
         data_source = st.radio(
             "Waiver wire data",
-            options=["Mock data", "Real data (no Yahoo)", "Live Yahoo data"],
+            options=["Real data (no Yahoo)", "Live Yahoo data"],
             index=0,
             help=(
                 "\"Real data (no Yahoo)\" builds a genuine, full-coverage player pool from "
-                "nfl_data_py + Sleeper -- zero Yahoo dependency, unlike mock data's synthetic "
-                "demo players. Applies to Priority Board, Rookie Radar, QB Konami Code, IR Stash "
-                "Targets, WR3 Floor Finder, Breakout Radar, and TE Difference-Makers -- Free Agent "
-                "Suggestions/Trade Finder still need a real multi-team roster (Yahoo or a mock "
-                "league), which no player-pool API can substitute for."
+                "nfl_data_py + Sleeper -- zero Yahoo dependency. Applies to Priority Board, "
+                "Rookie Radar, QB Konami Code, IR Stash Targets, WR3 Floor Finder, Breakout "
+                "Radar, and TE Difference-Makers -- Free Agent Suggestions/Trade Finder still "
+                "need a real multi-team roster (Yahoo or a mock league), which no player-pool "
+                "API can substitute for; they fall back to a mock league until Yahoo is live."
             ),
         )
         if data_source == "Live Yahoo data" and not yahoo_available:
-            st.caption("⚠️ No Yahoo credentials found (create `private.json` -- see README). Showing mock data instead.")
+            st.caption("⚠️ No Yahoo credentials found (create `private.json` -- see README). Showing the real Yahoo-free pool instead.")
         live_count_limit = st.slider(
             "Players to fetch (live only)", min_value=5, max_value=100, value=25, step=5,
             help="Each player costs one extra Yahoo API call for season stats.",
@@ -1716,7 +1716,7 @@ def main() -> None:
         )
         nfl_season = st.number_input(
             "NFL season", min_value=2015, max_value=2035, value=default_stats_season(), step=1,
-            disabled=data_source == "Mock data" or (data_source == "Live Yahoo data" and not enrich_with_nfl_data),
+            disabled=data_source == "Live Yahoo data" and not enrich_with_nfl_data,
             help="For \"Real data\": the last season with real played games to draw production "
                  "from (team/rookie/coaching context always uses the real current season "
                  "regardless -- see README's \"A note on season defaults\").",
@@ -1753,18 +1753,17 @@ def main() -> None:
             st.error(
                 f"Couldn't load live Yahoo data ({exc}). Run `python scripts/yahoo_login.py` "
                 "from a terminal first to complete the OAuth handshake, then reload. "
-                "Falling back to mock data for now.",
+                "Falling back to the real Yahoo-free player pool for now.",
                 icon="🚫",
             )
-            players_df = build_mock_players_df()
-    elif data_source == "Real data (no Yahoo)":
+            players_df = load_real_players_df(int(nfl_season))
+    else:
         try:
             with st.spinner("Building a real, Yahoo-free player pool (nfl_data_py + Sleeper)..."):
                 players_df = load_real_players_df(int(nfl_season))
             st.success(
                 f"Showing a real, Yahoo-free player pool ({int(nfl_season)} season stats, current "
-                "roster/coaching context) -- zero Yahoo dependency, unlike mock data's synthetic "
-                "demo players.",
+                "roster/coaching context) -- zero Yahoo dependency.",
                 icon="✅",
             )
             st.caption(
@@ -1777,14 +1776,6 @@ def main() -> None:
         except Exception as exc:
             st.error(f"Couldn't build the real player pool ({exc}). Falling back to mock data for now.", icon="🚫")
             players_df = build_mock_players_df()
-    else:
-        st.warning(
-            "Showing **mock data** shaped to match Yahoo's real `/players` response. Select "
-            "\"Real data (no Yahoo)\" for a genuine Yahoo-free player pool, or create "
-            "`private.json` (see README) and select \"Live Yahoo data\" for your real waiver wire.",
-            icon="⚠️",
-        )
-        players_df = build_mock_players_df()
 
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs(
         [
@@ -1829,8 +1820,8 @@ def main() -> None:
         # anything (whose roster is "my weakest player" relative to), which
         # only Yahoo or the synthetic mock league can provide -- a real
         # free-agent pool paired with a mock roster would silently mix two
-        # unrelated data sources. Falls back to the same mock players_df as
-        # "Mock data" mode whenever Yahoo isn't live.
+        # unrelated data sources. Falls back to mock data whenever Yahoo
+        # isn't live.
         free_agent_pool = players_df if data_source == "Live Yahoo data" else build_mock_players_df()
         render_free_agent_suggestions(free_agent_pool, use_live=(data_source == "Live Yahoo data"), credentials=credentials)
     with tab12:

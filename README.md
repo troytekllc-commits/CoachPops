@@ -93,8 +93,8 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
     **O-Line Power Rankings**, **Team Change Impact**, **Run Game Outlook**
     (see below), **Free Agent Suggestions**, **Trade Finder** (see "Free
     Agent Suggestions & Trade Finder" below), and **Draft Board** (see
-    below). A sidebar toggle switches between three "Waiver wire data"
-    sources — **Mock data**, **Real data (no Yahoo)** (see below), and
+    below). A sidebar toggle switches between two "Waiver wire data"
+    sources — **Real data (no Yahoo)** (see below, the default) and
     **Live Yahoo data**; O-Line Power Rankings/Team Change Impact/**Run
     Game Outlook**/**Draft Board** (plus Priority Board's O-Line/Team
     Change context) work with zero Yahoo access regardless — pure
@@ -651,9 +651,10 @@ streamlit run app.py
 ```
 
 Streamlit will print a local URL (usually `http://localhost:8501`) —
-open it in your browser to view the dashboard. Use the **"Data source"**
-toggle in the sidebar to switch between mock data and live Yahoo data (the
-live option only appears once `private.json` exists — run
+open it in your browser to view the dashboard. Use the **"Waiver wire
+data"** toggle in the sidebar to switch between the real, Yahoo-free
+player pool (the default — see "Real data (no Yahoo)" below) and live
+Yahoo data (the live option only appears once `private.json` exists — run
 `scripts/yahoo_login.py` first so the OAuth handshake doesn't happen mid
 Streamlit-rerun).
 
@@ -687,7 +688,8 @@ anytime, deploy to [Streamlit Community Cloud](https://share.streamlit.io)
    app automatically — this part needs no code changes, it's already set
    up to run this way.
 
-That gets you a working URL immediately, showing **mock data** (there's no
+That gets you a working URL immediately, showing the real, Yahoo-free
+player pool by default (see "Real data (no Yahoo)" above; there's no
 `private.json` on the deployed server, and there never will be — it's
 gitignored on purpose, see the Yahoo credentials section above). Two tabs
 (**O-Line Power Rankings**, **Team Change Impact**) and most of
