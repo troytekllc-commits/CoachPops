@@ -84,9 +84,12 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
   matching) so `build_priority_board()` can join a mover's context notes
   onto the right Yahoo player.
 - `ui/` — Streamlit dashboard
-  - `dashboard.py` — 14-tab dashboard. **Priority Board** (see below) is
-    first; then League Optimizer, Rookie Radar, QB Konami Code, IR Stash
-    Targets, WR3 Floor Finder, Breakout Radar, **TE Difference-Makers**,
+  - `dashboard.py` — 13-tab dashboard. **Priority Board** (see below) is
+    first (its table includes each player's raw league-scoring value --
+    the former standalone "League Optimizer" tab was folded in here since
+    it was just that same number, unblended; see below); then Rookie
+    Radar, QB Konami Code, IR Stash Targets, WR3 Floor Finder, Breakout
+    Radar, **TE Difference-Makers**,
     **O-Line Power Rankings**, **Team Change Impact**, **Run Game Outlook**
     (see below), **Free Agent Suggestions**, **Trade Finder** (see "Free
     Agent Suggestions & Trade Finder" below), and **Draft Board** (see
@@ -115,6 +118,10 @@ combine fairly):
 
 - **Production (40%)** — `calculate_custom_value()`'s output, ranked
   *within position* (a QB's raw point total is never compared to a WR's).
+  The raw number itself (unblended) is also shown as its own "league
+  value pts" column on the board -- this is what the standalone "League
+  Optimizer" tab used to show; it's been folded in here instead of kept
+  as a separate near-duplicate tab.
 - **Opportunity (35%)** — `find_breakout_signals()`'s `breakout_score`,
   ranked pool-wide. It's already a composite of injury opportunity,
   coaching changes, Vegas game script, Sleeper trending, and ownership

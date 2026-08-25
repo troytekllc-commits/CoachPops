@@ -40,7 +40,6 @@ from data.calculators import (  # noqa: E402
     apply_rookie_bump,
     assess_team_needs,
     build_priority_board,
-    calculate_custom_value,
     calculate_qb_floor,
     compute_replacement_level,
     evaluate_wr_scarcity,
@@ -773,24 +772,6 @@ def _style_table(df: pd.DataFrame, highlight_col: Optional[str] = None, higher_i
     return styler
 
 
-def render_league_optimizer(players_df: pd.DataFrame) -> None:
-    st.subheader("Waiver Wire, Ranked by Your League's Custom Scoring")
-    st.caption(
-        "Ignores generic point totals and rebuilds each player's value strictly from "
-        "this league's scoring weights (see `DEFAULT_SCORING_SETTINGS` in "
-        "`data/calculators.py` -- swap in `get_league_settings()` for the real thing)."
-    )
-    ranked = _with_display_name(calculate_custom_value(players_df))
-    display = ranked[["player_name", "editorial_team_abbr", "display_position", "status", "custom_value"]].rename(
-        columns={"editorial_team_abbr": "team", "display_position": "pos", "custom_value": "custom_value_pts"}
-    )
-    st.dataframe(
-        _style_table(display, highlight_col="custom_value_pts"),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-
 def render_rookie_radar(players_df: pd.DataFrame) -> None:
     st.subheader("Rookie RBs & WRs, Ranked by Bumped Back-Half Upside")
     st.caption(
@@ -1215,10 +1196,10 @@ def render_priority_board(players_df: pd.DataFrame) -> None:
 
     st.subheader("Priority Board")
     st.caption(
-        "Blends every other tab into one cross-position rank: this league's own scoring "
-        "(League Optimizer, ranked within position so a QB's raw points are never compared "
-        "to a WR's), Breakout Radar's opportunity score (already a composite of injury/"
-        "coaching/game-script/Sleeper/ownership signals), whichever position-specific tab "
+        "Blends every other tab into one cross-position rank: this league's own custom scoring "
+        "(shown here as \"league value pts\", ranked within position so a QB's raw points are "
+        "never compared to a WR's), Breakout Radar's opportunity score (already a composite of "
+        "injury/coaching/game-script/Sleeper/ownership signals), whichever position-specific tab "
         "applies as a bonus (TE Difference-Makers, Rookie Radar, QB Konami Code, or WR3 Floor "
         "Finder), and -- as light context, not a driver -- the player's team's O-Line Power "
         "Ranking. Team Change Impact's notes show up as context too, never folded into the "
@@ -1256,9 +1237,11 @@ def render_priority_board(players_df: pd.DataFrame) -> None:
     )
 
     display = board[
-        ["player_name", "editorial_team_abbr", "display_position", "priority_score",
-         "priority_signals", "priority_cautions"]
-    ].rename(columns={"editorial_team_abbr": "team", "display_position": "pos"})
+        ["player_name", "editorial_team_abbr", "display_position", "status", "priority_score",
+         "custom_value", "priority_signals", "priority_cautions"]
+    ].rename(columns={
+        "editorial_team_abbr": "team", "display_position": "pos", "custom_value": "league value pts",
+    })
     display["priority_signals"] = display["priority_signals"].apply(lambda s: " | ".join(s) if s else "")
     display["priority_cautions"] = display["priority_cautions"].apply(lambda s: " | ".join(s) if s else "")
     st.dataframe(_style_table(display, highlight_col="priority_score"), use_container_width=True, hide_index=True)
@@ -1611,10 +1594,9 @@ def main() -> None:
         )
         players_df = build_mock_players_df()
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs(
         [
             "Priority Board",
-            "League Optimizer",
             "Rookie Radar",
             "QB Konami Code",
             "IR Stash Targets",
@@ -1632,30 +1614,28 @@ def main() -> None:
     with tab1:
         render_priority_board(players_df)
     with tab2:
-        render_league_optimizer(players_df)
-    with tab3:
         render_rookie_radar(players_df)
-    with tab4:
+    with tab3:
         render_qb_konami_code(players_df)
-    with tab5:
+    with tab4:
         render_ir_stash_targets(players_df)
-    with tab6:
+    with tab5:
         render_wr3_floor_finder(players_df)
-    with tab7:
+    with tab6:
         render_breakout_radar(players_df)
-    with tab8:
+    with tab7:
         render_te_difference_makers(players_df)
-    with tab9:
+    with tab8:
         render_oline_rankings()
-    with tab10:
+    with tab9:
         render_team_change_report()
-    with tab11:
+    with tab10:
         render_run_game_outlook()
-    with tab12:
+    with tab11:
         render_free_agent_suggestions(players_df, use_live=(data_source == "Live Yahoo data"), credentials=credentials)
-    with tab13:
+    with tab12:
         render_trade_finder(use_live=(data_source == "Live Yahoo data"), credentials=credentials)
-    with tab14:
+    with tab13:
         render_draft_board()
 
 
