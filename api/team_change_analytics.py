@@ -134,8 +134,9 @@ def build_team_change_report(season: int, stats_season: Optional[int] = None) ->
     (preserves plain historical-research behavior, e.g. `season=2020`
     still uses 2020 stats for context with no caller changes needed), but
     should be pinned to the last real stats season when `season` has no
-    games played yet -- see `render_team_change_report()`'s fallback in
-    `ui/dashboard.py`, which retries with `stats_season=season - 1` on a
+    games played yet -- see `_render_team_change_section()`'s fallback in
+    `ui/dashboard.py` (called from `render_team_outlook()`), which retries
+    with `stats_season=season - 1` on a
     real data-availability failure while keeping the mover list itself
     pinned to the originally requested `season`, rather than regressing
     the whole report (movers included) by a full year.

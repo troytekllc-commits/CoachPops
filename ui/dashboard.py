@@ -974,10 +974,10 @@ def render_position_deep_dives(players_df: pd.DataFrame) -> None:
 
 
 def _render_oline_section(season: int) -> None:
-    """Team-level O-Line Power Rankings. Unlike every other section in
-    this tab-group, this one needs no Yahoo data at all -- pure
-    nfl_data_py -- so it works the same whether the sidebar is set to
-    mock or live Yahoo data."""
+    """Team-level O-Line Power Rankings. Like every other section in
+    this tab-group (see `render_team_outlook()`), this one needs no
+    Yahoo data at all -- pure nfl_data_py -- so it works the same
+    whether the sidebar is set to mock or live Yahoo data."""
     from api.oline_analytics import build_oline_rankings_with_trend
 
     st.markdown("#### O-Line Power Rankings")

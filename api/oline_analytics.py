@@ -231,7 +231,7 @@ def build_oline_rankings_with_trend(season: int, coaching_season: Optional[int] 
     actually played. Defaults to `season` (unchanged behavior for plain
     historical lookups) -- pass the real requested season explicitly when
     the caller had to fall back `season` to the last one with real stats
-    (see `render_oline_rankings()` in `ui/dashboard.py`), so the coaching
+    (see `_render_oline_section()` in `ui/dashboard.py`), so the coaching
     flags don't get stale-by-a-year for no reason."""
     coaching_season = coaching_season if coaching_season is not None else season
     current = build_oline_power_rankings(season)

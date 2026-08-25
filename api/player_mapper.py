@@ -267,9 +267,10 @@ def build_players_dataframe(
             # season" widget lets a user do exactly that (e.g. 2026 before
             # Week 1) -- same real, live-confirmed gap as every other
             # season-selecting tab in this app (see ui/dashboard.py's
-            # render_oline_rankings()/render_team_change_report()). Falls
-            # back one year rather than losing the real live Yahoo waiver
-            # wire data entirely over a bad enrichment-season pick.
+            # _render_oline_section()/_render_team_change_section(), both
+            # inside render_team_outlook()). Falls back one year rather
+            # than losing the real live Yahoo waiver wire data entirely
+            # over a bad enrichment-season pick.
             fallback_season = enrichment_season - 1
             logger.warning(
                 "Couldn't enrich with %s season data (%s) -- nflverse likely hasn't published real "
@@ -358,9 +359,10 @@ def build_league_rosters_dataframe(
             # season" widget lets a user do exactly that (e.g. 2026 before
             # Week 1) -- same real, live-confirmed gap as every other
             # season-selecting tab in this app (see ui/dashboard.py's
-            # render_oline_rankings()/render_team_change_report()). Falls
-            # back one year rather than losing the real live Yahoo waiver
-            # wire data entirely over a bad enrichment-season pick.
+            # _render_oline_section()/_render_team_change_section(), both
+            # inside render_team_outlook()). Falls back one year rather
+            # than losing the real live Yahoo waiver wire data entirely
+            # over a bad enrichment-season pick.
             fallback_season = enrichment_season - 1
             logger.warning(
                 "Couldn't enrich with %s season data (%s) -- nflverse likely hasn't published real "
