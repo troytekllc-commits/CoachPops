@@ -345,14 +345,17 @@ rostered players), but a draft board needs *every* player, so this keys
 by nflverse's own gsis `player_id` instead — zero Yahoo dependency, by
 construction, not just by accident.
 
-**Read this before trusting the rankings**: this is last season's real,
-actual performance under your league's own scoring — not a synthetic
-projection for the upcoming season. No real projections feed is
-connected (see "Additional data sources" → paid services notes on
-FantasyPros below); this is the most defensible free proxy available,
-not a finished cheat sheet that already knows about every offseason
-move (a free-agent signing that changes a target competition, for
-instance, isn't reflected here).
+**Read this before trusting the rankings**: the core ranking is last
+season's real, actual performance under your league's own scoring — not
+a synthetic projection for the upcoming season — and remains the
+fallback with no configuration at all; this is the most defensible free
+proxy available, not a finished cheat sheet that already knows about
+every offseason move (a free-agent signing that changes a target
+competition, for instance, isn't reflected here). A real, synthetic
+projection for the upcoming season IS available as an optional overlay
+once a `fantasypros_api_key` is configured (see "FantasyPros
+projections/rankings" below) — a genuine third-party second opinion
+alongside, not a replacement for, the real-performance ranking above.
 
 The season selector defaults to `default_stats_season()` (the last
 *completed* season) and automatically falls back one year if nflverse
@@ -627,17 +630,20 @@ or in `private.json`:
 }
 ```
 
-**Real, discovered limitation**: the free API tier caps every request at
-exactly 10 players — regardless of how many actually exist for that
-query — confirmed directly against the live API, not documented anywhere
-obvious. `api/fantasypros.py` works around this by fetching each of the 6
-positions (QB/RB/WR/TE/K/DST) separately, each with its own 10-player cap,
-for up to ~60 real players total — the top of the draft board, not the
-full player pool. It also needs a real ~1-second delay between each of
-those requests (a live 429 rate limit hits without it) — a cold cache
-costs a few seconds accordingly, which is why Draft Board's fetch is
-`@st.cache_data`-cached for 6 hours and gated behind a checkbox you can
-uncheck to skip the network call entirely.
+**Real, discovered tier difference**: FantasyPros' free API tier caps
+every request at exactly 10 players — regardless of how many actually
+exist for that query — confirmed directly against the live API, not
+documented anywhere obvious. A paid-tier key (confirmed live with this
+league's own key) lifts that cap entirely — a single request returns the
+whole player pool. `api/fantasypros.py` tries one full-pool request
+first and only falls back to fetching each of the 6 positions
+(QB/RB/WR/TE/K/DST) separately — up to ~60 real players total, the top
+of the draft board rather than the full pool — if that first request
+actually comes back capped. The per-position fallback path also needs a
+real ~1-second delay between requests (a live 429 rate limit hits without
+it); either way, a cold cache costs a few seconds, which is why Draft
+Board's fetch is `@st.cache_data`-cached for 6 hours and gated behind a
+checkbox you can uncheck to skip the network call entirely.
 
 Like the weather key, this is entirely optional — without one, or if the
 API call fails for any reason, Draft Board simply shows blank

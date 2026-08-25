@@ -8,29 +8,33 @@ is an actual third-party projection for the season that hasn't been played
 yet, plus a real, independent expert-consensus ranking to cross-check
 against this project's own model.
 
-Real, discovered limitation -- read before trusting the coverage
-------------------------------------------------------------------
-The API key behind this integration is FantasyPros' FREE public-API tier,
-which caps every request at exactly 10 players (`"public_api_limited":
-true` in the raw response -- confirmed directly against the live API, not
-documented anywhere obvious) regardless of how many total players exist
-for that query (the response's own `count` field reports the REAL total --
-e.g. 599 across QB/RB/WR/TE/K/DST combined for a 2026 season projection
-request, but only 10 are ever actually returned in `players`).
+Tier-dependent coverage -- read before trusting the coverage
+---------------------------------------------------------------
+FantasyPros' FREE public-API tier caps every request at exactly 10
+players regardless of how many total players exist for that query (the
+response's own `count` field reports the REAL total -- e.g. 599 across
+QB/RB/WR/TE/K/DST combined for a 2026 season projection request, but only
+10 are ever actually returned in `players`) -- confirmed directly against
+the live API, not documented anywhere obvious. A paid-tier key (confirmed
+live with this project's own HOF-tier key) lifts that cap entirely: a
+single `position=ALL` request returns the FULL player pool (819 players
+for a season projection request, matching `count` exactly) in one call.
 
-Fetching one position at a time (instead of `position=ALL`) works around
-this partially -- each of the 6 positions gets its OWN 10-player cap, so
-`fetch_projections()`/`fetch_consensus_rankings()` fetch QB/RB/WR/TE/K/DST
-separately and concatenate, yielding up to *60* real players total (the
-top ~10 at each position by FantasyPros' own ordering) -- not the full
-player pool. Treat this as a real, elite-tier-only supplement: a live
-second opinion at the very top of the draft board, where it happens to
-have full coverage, not a full replacement for this app's own Draft Board
-(built from complete real stat history, covering every rostered player).
+Note the response's own `"public_api_limited": true` flag is NOT a
+reliable signal for which tier is active -- it's still `true` on
+responses that come back with the complete, uncapped pool under a paid
+key. The only reliable check is comparing `len(players)` against the
+response's own `count` field.
 
-Upgrading the FantasyPros API plan (paid tiers remove this cap) would let
-this same code return the full player pool with no changes beyond
-removing the per-position fetch loop.
+`fetch_projections()`/`fetch_consensus_rankings()` try a single
+`position=ALL` request first; only if that comes back truncated relative
+to its own `count` (i.e. a free-tier key) do they fall back to the
+6-separate-positions workaround, which yields up to *60* real players
+total (the top ~10 at each position by FantasyPros' own ordering) instead
+of the full pool. That fallback path is why this was previously
+documented as an "elite-tier-only supplement" -- with a paid key it's a
+genuine full replacement-grade second opinion, not just a top-of-draft
+one.
 
 Real ID crosswalk, not name-matching
 --------------------------------------
@@ -125,16 +129,27 @@ def _get(path: str, params: dict) -> dict:
     return response.json()
 
 
-def fetch_projections(season: int, week: int = 0, scoring: str = "STD") -> pd.DataFrame:
-    """Real FantasyPros projections for `season` (``week=0`` = full-season,
-    otherwise that week's projection) -- one row per player, flattened
-    from the API's nested ``stats`` dict. Fetches each position
-    separately to work around the free tier's 10-player-per-request cap
-    (see module docstring) -- up to 60 real players total, not the full
-    pool. Raises only if EVERY position's fetch fails; a single failed
-    position is logged and skipped so a transient error doesn't blank out
-    the other five.
-    """
+def _flatten_projection_players(players: list) -> list:
+    rows = []
+    for player in players:
+        row = {
+            "fpid": player.get("fpid"),
+            "name": player.get("name"),
+            "position_id": player.get("position_id"),
+            "team_id": player.get("team_id"),
+        }
+        row.update(player.get("stats", {}))
+        rows.append(row)
+    return rows
+
+
+def _fetch_projections_per_position(season: int, week: int, scoring: str) -> pd.DataFrame:
+    """Free-tier fallback: each of the 6 positions gets its OWN 10-player
+    cap, so fetching them separately yields up to 60 real players total
+    (the top ~10 at each position) instead of the full pool -- see module
+    docstring. Raises only if EVERY position's fetch fails; a single
+    failed position is logged and skipped so a transient error doesn't
+    blank out the other five."""
     rows = []
     successes = 0
     for i, position in enumerate(FANTASYPROS_POSITIONS):
@@ -146,29 +161,41 @@ def fetch_projections(season: int, week: int = 0, scoring: str = "STD") -> pd.Da
             logger.warning("FantasyPros projections fetch failed for position=%s: %s", position, exc)
             continue
         successes += 1
-        for player in payload.get("players", []):
-            row = {
-                "fpid": player.get("fpid"),
-                "name": player.get("name"),
-                "position_id": player.get("position_id"),
-                "team_id": player.get("team_id"),
-            }
-            row.update(player.get("stats", {}))
-            rows.append(row)
+        rows.extend(_flatten_projection_players(payload.get("players", [])))
 
     if successes == 0:
         raise RuntimeError(f"FantasyPros projections fetch failed for every position (season={season}).")
     return pd.DataFrame(rows)
 
 
-def fetch_consensus_rankings(season: int, ranking_type: str = "ST", week: int = 0) -> pd.DataFrame:
-    """Real FantasyPros expert-consensus rankings for `season`
-    (``ranking_type="ST"`` = standard season-long draft rankings) -- one
-    row per player, including the real ``player_yahoo_id`` crosswalk (see
-    module docstring) and ``rank_ecr``/``pos_rank``/``tier``/
-    ``player_bye_week``. Same per-position fetch loop and partial-failure
-    handling as `fetch_projections()`.
+def fetch_projections(season: int, week: int = 0, scoring: str = "STD") -> pd.DataFrame:
+    """Real FantasyPros projections for `season` (``week=0`` = full-season,
+    otherwise that week's projection) -- one row per player, flattened
+    from the API's nested ``stats`` dict. Tries a single ``position=ALL``
+    request first; a paid-tier key returns the full pool in that one call.
+    Only falls back to the slower per-position workaround (see module
+    docstring) if the ``ALL`` response actually comes back truncated
+    relative to its own ``count`` field (i.e. a free-tier key).
     """
+    try:
+        payload = _get(f"{season}/projections", {"position": "ALL", "scoring": scoring, "week": week})
+    except Exception as exc:
+        logger.warning("FantasyPros projections fetch failed for position=ALL (%s) -- trying per-position.", exc)
+        return _fetch_projections_per_position(season, week, scoring)
+
+    players = payload.get("players", [])
+    total = int(payload.get("count") or len(players))  # confirmed live: comes back as a string, not an int
+    if len(players) < total:
+        logger.info(
+            "FantasyPros projections: ALL request returned %d/%d players -- free-tier cap detected, "
+            "falling back to per-position fetching.", len(players), total,
+        )
+        return _fetch_projections_per_position(season, week, scoring)
+    return pd.DataFrame(_flatten_projection_players(players))
+
+
+def _fetch_consensus_rankings_per_position(season: int, ranking_type: str, week: int) -> pd.DataFrame:
+    """Free-tier fallback, same shape as `_fetch_projections_per_position()`."""
     rows = []
     successes = 0
     for i, position in enumerate(FANTASYPROS_POSITIONS):
@@ -190,6 +217,33 @@ def fetch_consensus_rankings(season: int, ranking_type: str = "ST", week: int = 
     return pd.DataFrame(rows)
 
 
+def fetch_consensus_rankings(season: int, ranking_type: str = "ST", week: int = 0) -> pd.DataFrame:
+    """Real FantasyPros expert-consensus rankings for `season`
+    (``ranking_type="ST"`` = standard season-long draft rankings) -- one
+    row per player, including the real ``player_yahoo_id`` crosswalk (see
+    module docstring) and ``rank_ecr``/``pos_rank``/``tier``/
+    ``player_bye_week``. Same ALL-first-then-per-position-fallback
+    strategy as `fetch_projections()`.
+    """
+    try:
+        payload = _get(f"{season}/consensus-rankings", {"type": ranking_type, "position": "ALL", "week": week})
+    except Exception as exc:
+        logger.warning(
+            "FantasyPros consensus-rankings fetch failed for position=ALL (%s) -- trying per-position.", exc
+        )
+        return _fetch_consensus_rankings_per_position(season, ranking_type, week)
+
+    players = payload.get("players", [])
+    total = int(payload.get("count") or len(players))  # confirmed live: comes back as a string, not an int
+    if len(players) < total:
+        logger.info(
+            "FantasyPros consensus-rankings: ALL request returned %d/%d players -- free-tier cap detected, "
+            "falling back to per-position fetching.", len(players), total,
+        )
+        return _fetch_consensus_rankings_per_position(season, ranking_type, week)
+    return pd.DataFrame(players)
+
+
 FANTASYPROS_ENRICHMENT_FIELDS = (
     "fantasypros_projected_points", "fantasypros_rank_ecr",
     "fantasypros_pos_rank", "fantasypros_tier", "fantasypros_bye_week",
@@ -198,8 +252,10 @@ FANTASYPROS_ENRICHMENT_FIELDS = (
 
 def fetch_fantasypros_bundle(season: int, week: int = 0) -> Dict[str, pd.DataFrame]:
     """Both real FantasyPros feeds needed for `join_fantasypros_data()`,
-    fetched together with the request spacing this free tier needs
-    between them (see `REQUEST_SPACING_SECONDS`). Split out from the join
+    fetched together with a small request spacing between them (see
+    `REQUEST_SPACING_SECONDS` -- confirmed live as a real rate-limit
+    requirement on the free tier; cheap to keep regardless of which tier
+    the configured key is on). Split out from the join
     step so a caller (e.g. `ui/dashboard.py`'s `@st.cache_data`) can cache
     the network round-trip independently of whatever players DataFrame
     it'll eventually be joined onto -- that DataFrame changes with every
@@ -230,8 +286,9 @@ def join_fantasypros_data(
     matching). Pure/no network calls -- safe to call on every rerun.
 
     Adds `FANTASYPROS_ENRICHMENT_FIELDS`, all ``None`` where no match was
-    found (the player isn't in FantasyPros' free-tier top ~10 at their
-    position).
+    found -- either the player genuinely isn't in FantasyPros' data, or
+    (only on a free-tier key, see module docstring) they fell outside the
+    top ~10 at their position.
 
     Args:
         yahoo_id_column: Which column on `players_df` already holds
