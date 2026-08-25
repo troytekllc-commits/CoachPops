@@ -83,22 +83,38 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
   same `import_seasonal_rosters()` row as its `player_id` -- not name
   matching) so `build_priority_board()` can join a mover's context notes
   onto the right Yahoo player.
+- `api/coaching_analytics.py` — **Coaching Changes & Scheme Outlook**'s
+  report (see below): every real, current coaching change plus each
+  team's own real offensive tendencies, and — for a new head coach who
+  was a head coach elsewhere last season — that prior team's tendencies
+  too, as a real, disclosed scheme-shift signal.
+- `api/handcuff_analytics.py` — **Next Man Up**'s report (see below):
+  real, current "who inherits volume if the starter's hurt" opportunities
+  for RB/WR, from last season's real usage share remapped onto each
+  player's real current team.
+- `api/qb_value_analytics.py` — **QB Value Finder**'s scoring (see
+  below): ranks QBs by real league-scoring value, then compares that
+  rank against real market cost (Yahoo ADP/FantasyPros) to flag value.
 - `ui/` — Streamlit dashboard
-  - `dashboard.py` — 13-tab dashboard. **Priority Board** (see below) is
+  - `dashboard.py` — 16-tab dashboard. **Priority Board** (see below) is
     first (its table includes each player's raw league-scoring value --
     the former standalone "League Optimizer" tab was folded in here since
     it was just that same number, unblended; see below); then Rookie
     Radar, QB Konami Code, IR Stash Targets, WR3 Floor Finder, Breakout
     Radar, **TE Difference-Makers**,
-    **O-Line Power Rankings**, **Team Change Impact**, **Run Game Outlook**
-    (see below), **Free Agent Suggestions**, **Trade Finder** (see "Free
-    Agent Suggestions & Trade Finder" below), and **Draft Board** (see
-    below). A sidebar toggle switches between two "Waiver wire data"
+    **O-Line Power Rankings**, **Coaching Changes & Scheme Outlook** (see
+    below), **Team Change Impact**, **Run Game Outlook**
+    (see below), **Next Man Up** (see below), **Free Agent Suggestions**,
+    **Trade Finder** (see "Free Agent Suggestions & Trade Finder" below),
+    **Draft Board** (see below), and **QB Value Finder** (see below). A
+    sidebar toggle switches between two "Waiver wire data"
     sources — **Real data (no Yahoo)** (see below, the default) and
-    **Live Yahoo data**; O-Line Power Rankings/Team Change Impact/**Run
-    Game Outlook**/**Draft Board** (plus Priority Board's O-Line/Team
+    **Live Yahoo data**; O-Line Power Rankings/Coaching Changes/Team
+    Change Impact/**Run Game Outlook**/**Next Man Up**/**Draft
+    Board**/**QB Value Finder** (plus Priority Board's O-Line/Team
     Change context) work with zero Yahoo access regardless — pure
-    `nfl_data_py`. Every tab's
+    `nfl_data_py` (+ Sleeper for Next Man Up's live injury status). Every
+    tab's
     table is styled via `_style_table()` to match the blue theme
     (`.streamlit/config.toml`): light zebra-striped row banding plus a
     blue-intensity gradient (darker = better) on that tab's key ranking
@@ -276,6 +292,60 @@ Henry departing to Baltimore, Philadelphia's D'Andre Swift departing as
 Saquon Barkley arrived). Like Draft Board, the season selector falls
 back one year automatically (with a visible warning) if nflverse hasn't
 published full weekly stats for the selected season yet.
+
+### Next Man Up
+
+Real, current "handcuff" opportunities (`api/handcuff_analytics.py`),
+built with zero Yahoo access — pure `nfl_data_py` + Sleeper, same as
+Run Game Outlook/O-Line Power Rankings. For each team's real top-usage
+RB/WR who's carrying a real, CURRENT injury designation (Sleeper's live
+`status` — Questionable/Doubtful/Out/IR/PUP, not last season's injury
+history), surfaces the next-highest-usage teammate at that position and
+an `opportunity_score` weighted by the starter's own usage magnitude and
+how serious the injury looks.
+
+"Starter" and "backup" are determined by last season's real usage share
+— RB carry/touch/snap share (reusing `api/run_game_analytics.py`'s
+`compute_rb_workload()`) or WR target share (a new, same-method
+equivalent) — since nflverse's own depth-chart data has a real, confirmed
+schema break for 2025+ (no `week`/`depth_position` columns at all — see
+"Real 2025+ stats, derived from play-by-play" above). Every player's team
+is remapped to their real CURRENT roster before ranking, so an offseason
+trade/free-agent move doesn't leave them grouped with their old
+teammates. **Real, disclosed limitations**: this is a proxy for the
+current depth chart, not a live one — a genuine training-camp shakeup
+(a free-agent signing, a rookie who wins the job outright) can make it
+wrong in exactly the way Run Game Outlook's own `workhorse_status`
+("retained"/"departed") already discloses for the same reason; and a true
+rookie/new-to-the-NFL backup with zero prior-season usage can't be
+surfaced as a backup at all — Rookie Radar is the complementary tool for
+that case. TE isn't covered — a real, disclosed scope choice, not an
+oversight.
+
+### Coaching Changes & Scheme Outlook
+
+Every team with a real, current new head coach and/or offensive
+coordinator this season (`api/coaching_analytics.py`, reusing
+`build_coaching_change_lookup()`), cross-referenced with that team's own
+real pass rate/O-line strength last season as the "before" baseline.
+Where the new head coach was ALSO a head coach somewhere else last
+season — a real, findable fact from nflverse's own `import_schedules()`
+coach columns, not a guess — that prior team's same tendencies are shown
+too, as a real signal for the incoming scheme (e.g. real 2026 data
+surfaced John Harbaugh moving from Baltimore to the Giants, with
+Baltimore's own real pass rate shown as the "signal" for what he might
+install).
+
+**Real, disclosed limitation**: this trail only exists for a new head
+coach who was ALSO a head coach elsewhere last season — a first-time HC
+(promoted internally, or elevated from a coordinator role) has no such
+history, and offensive coordinator hires (`data/coaching_changes.csv`,
+this project's own manually maintained tracker) were never tracked with
+a "previous team" field at all, so an OC hire only ever shows the "new
+OC" flag itself, never a scheme signal. Treat every "ran a pass-heavy/
+run-heavy offense at their old team" note as one real data point
+informing a guess, not a certainty — a coach can and does deliberately
+change scheme when taking a new job.
 
 ### Free Agent Suggestions & Trade Finder
 
@@ -512,6 +582,20 @@ roster construction (`DEFAULT_ROSTER_REQUIREMENTS` in
 / 6 BN / 2 IR, with the FLEX slot being **"W/R" only** (TE is not
 FLEX-eligible in this league), which Free Agent Suggestions/Trade
 Finder's need calculations already assume.
+
+### QB Value Finder
+
+Built for a "don't draft a QB early" strategy (`api/qb_value_analytics.py`):
+reuses Draft Board's exact pool (real last-season performance under this
+league's own scoring), ranks QBs by that real value, then compares the
+rank against where the market actually drafts them — Yahoo ADP (the
+same `data/yahoo_draft_reference.csv` reference above) and, optionally,
+a live FantasyPros expert-consensus check. A positive **value score**
+(market rank minus this board's rank) means a QB is real, defensible
+value at their actual draft cost — safe to wait on; a negative one flags
+the market drafting them earlier than their real production supports.
+Degrades to whichever market-cost signal is actually available (Yahoo
+ADP, FantasyPros, or neither) rather than requiring both.
 
 ### A note on season defaults
 

@@ -1035,6 +1035,75 @@ def render_oline_rankings() -> None:
         st.caption(f"Biggest rank movers vs. last season: {mover_text}")
 
 
+def render_coaching_changes() -> None:
+    """Every team with a real, current new head coach and/or offensive
+    coordinator, plus what that might mean for the team's play style --
+    see `api/coaching_analytics.py` for the full methodology and its
+    real, disclosed limits."""
+    from api.coaching_analytics import build_coaching_scheme_report
+    from api.nfl_enrichment import default_stats_season
+
+    st.subheader("Coaching Changes & Scheme Outlook")
+    st.caption(
+        "Every team with a real, current new head coach and/or offensive coordinator this "
+        "season, alongside that team's own real pass rate/O-line strength last season (the "
+        "\"before\" baseline). Where the new head coach was ALSO a head coach somewhere else "
+        "last season -- a real, findable fact, not a guess -- that prior team's same tendencies "
+        "are shown too, as a real signal for the incoming scheme. Coordinator-only hires and "
+        "first-time/promoted-internally head coaches have no such trail (a real, disclosed gap, "
+        "not an oversight) -- see `api/coaching_analytics.py`."
+    )
+
+    season = st.number_input(
+        "Season (last completed season's tendencies)", min_value=2016, max_value=2035,
+        value=default_stats_season(), step=1, key="coaching_changes_season",
+    )
+
+    @st.cache_data(ttl=3600, show_spinner="Cross-referencing coaching changes with real team tendencies...")
+    def _load(season: int) -> pd.DataFrame:
+        return build_coaching_scheme_report(season)
+
+    try:
+        report = _load(int(season))
+    except Exception as exc:
+        fallback_season = int(season) - 1
+        st.warning(
+            f"Couldn't build the coaching scheme report using {int(season)}'s tendencies ({exc}) "
+            f"-- nflverse likely hasn't published real game stats for that season yet. Using "
+            f"{fallback_season}'s real tendencies instead -- the coaching changes themselves are "
+            f"still this season's real, current staff.",
+            icon="⚠️",
+        )
+        try:
+            report = _load(fallback_season)
+        except Exception as exc2:
+            st.error(f"Couldn't build the coaching scheme report for {fallback_season} either ({exc2}).", icon="🚫")
+            return
+
+    if report.empty:
+        st.info("No real, current coaching changes found for this season.")
+        return
+
+    display = report.copy()
+    display["coach_style_last_season"] = display["pass_rate"].apply(
+        lambda p: f"{p:.0%} pass rate" if pd.notna(p) else "unknown"
+    )
+    table = display[[
+        "team", "head_coach_name", "new_head_coach", "offensive_coordinator_name",
+        "new_offensive_coordinator", "coach_style_last_season", "oline_score", "prior_team", "context_notes",
+    ]].rename(columns={
+        "head_coach_name": "head coach", "new_head_coach": "new HC?",
+        "offensive_coordinator_name": "offensive coordinator", "new_offensive_coordinator": "new OC?",
+        "coach_style_last_season": "team's style last season", "oline_score": "O-line score",
+        "prior_team": "HC's prior team", "context_notes": "context",
+    })
+    st.dataframe(
+        _style_table(table, highlight_col="O-line score"),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def render_team_change_report() -> None:
     """Skill-position players who changed teams, with old-vs-new team
     context. Like O-Line Power Rankings, this is pure nfl_data_py -- no
@@ -1211,6 +1280,76 @@ def render_run_game_outlook() -> None:
         "real NFL injury report -- a real caveat for the shares above: a back who missed real time "
         "shows a season-total workload that UNDERSTATES what they command when actually healthy, so "
         "a low bell cow score paired with real weeks out can mean \"was hurt,\" not \"is a committee back.\""
+    )
+
+
+def render_next_man_up() -> None:
+    """Real, current "next man up" opportunities: for each team's
+    top-usage RB/WR carrying a real, CURRENT injury designation
+    (Sleeper), who the primary backup is and how much they stand to
+    inherit -- see `api/handcuff_analytics.py` for the full methodology
+    and its real, disclosed limits."""
+    from api.handcuff_analytics import find_next_man_up
+    from api.nfl_enrichment import default_stats_season
+
+    st.subheader("Next Man Up")
+    st.caption(
+        "For each team's real, top-usage RB/WR who's carrying a real, CURRENT injury "
+        "designation (Sleeper's live status -- Questionable/Doubtful/Out/IR/PUP), the "
+        "next-highest-usage teammate at that position, and an `opportunity_score` weighted by "
+        "the starter's own usage magnitude and how serious the injury looks. Usage is last "
+        "season's real carry/touch/snap share (RB) or target share (WR), remapped onto each "
+        "player's real CURRENT team -- not a live depth chart (nflverse's own depth-chart data "
+        "has a real schema break for 2025+ -- see README). A true rookie/new arrival with zero "
+        "prior-season usage can't be surfaced as a backup here -- Rookie Radar is the "
+        "complementary tool for that case. TE isn't covered -- a real, disclosed scope choice."
+    )
+
+    season = st.number_input(
+        "Season (last completed season's usage)", min_value=2016, max_value=2035,
+        value=default_stats_season(), step=1, key="next_man_up_season",
+    )
+
+    @st.cache_data(ttl=3600, show_spinner="Cross-referencing usage share with real current injury status...")
+    def _load(season: int) -> pd.DataFrame:
+        return find_next_man_up(season)
+
+    try:
+        candidates = _load(int(season))
+    except Exception as exc:
+        fallback_season = int(season) - 1
+        st.warning(
+            f"Couldn't build usage shares from {int(season)} data ({exc}) -- nflverse likely "
+            f"hasn't published real game stats for that season yet. Falling back to "
+            f"{fallback_season}.",
+            icon="⚠️",
+        )
+        try:
+            candidates = _load(fallback_season)
+        except Exception as exc2:
+            st.error(f"Couldn't build the report for {fallback_season} either ({exc2}).", icon="🚫")
+            return
+
+    if candidates.empty:
+        st.info(
+            "No real, current starter-level injury designations clear the bar right now -- this "
+            "fills in once real, current injuries start accumulating during the season."
+        )
+        return
+
+    display = candidates[[
+        "team", "position", "player_name_starter", "starter_status", "player_name_backup",
+        "backup_status", "usage_share_backup", "opportunity_score", "context_notes",
+    ]].rename(columns={
+        "player_name_starter": "starter", "starter_status": "starter status",
+        "player_name_backup": "next man up", "backup_status": "backup status",
+        "usage_share_backup": "backup's own usage share", "opportunity_score": "opportunity score",
+        "context_notes": "context",
+    })
+    st.dataframe(
+        _style_table(display, highlight_col="opportunity score"),
+        use_container_width=True,
+        hide_index=True,
     )
 
 
@@ -1692,6 +1831,114 @@ def render_draft_board() -> None:
     st.dataframe(_style_table(display, highlight_col="priority_score"), use_container_width=True, hide_index=True)
 
 
+def render_qb_value_finder() -> None:
+    """QBs whose real value under this league's own scoring ranks much
+    better than where the market actually drafts them -- built for a
+    "don't draft a QB early" strategy. Reuses Draft Board's exact pool-
+    building pipeline; see `api/qb_value_analytics.py` for the scoring
+    methodology."""
+    from api.nfl_enrichment import DEFAULT_YAHOO_DRAFT_REFERENCE_CSV, attach_yahoo_adp, build_draft_board_pool, default_nfl_season, default_stats_season
+    from api.qb_value_analytics import compute_qb_adp_value
+
+    st.subheader("QB Value Finder")
+    st.caption(
+        "Ranks QBs by real value under this league's own scoring, then compares that rank "
+        "against where the market actually drafts them (Yahoo ADP, and optionally FantasyPros' "
+        "live expert-consensus rank) -- built for a \"wait on QB\" draft strategy: which QBs "
+        "offer top-tier real value even though they won't cost an early pick. A positive "
+        "\"value score\" means this board ranks that QB better than the market does; a "
+        "negative one flags the market drafting them earlier than their real value supports."
+    )
+    has_yahoo_adp_reference = DEFAULT_YAHOO_DRAFT_REFERENCE_CSV.is_file()
+    if not has_yahoo_adp_reference:
+        st.caption(
+            "⚠️ No Yahoo ADP reference found (`data/yahoo_draft_reference.csv`) -- value scores "
+            "need a real market-cost signal to compare against; see README for how to add one, "
+            "or enable the FantasyPros check below."
+        )
+
+    season = st.number_input(
+        "Season (last completed season's stats)", min_value=2015, max_value=2035,
+        value=default_stats_season(), step=1, key="qb_value_season",
+    )
+
+    @st.cache_data(ttl=3600, show_spinner="Building the real, league-scored QB board...")
+    def _load(season: int) -> pd.DataFrame:
+        pool = build_draft_board_pool(season)
+        return build_priority_board(pool)
+
+    try:
+        board = _load(int(season))
+    except Exception as exc:
+        fallback_season = int(season) - 1
+        st.warning(
+            f"Couldn't build the QB board for {int(season)} ({exc}) -- nflverse likely hasn't "
+            f"published full weekly stats for that season yet. Falling back to {fallback_season}.",
+            icon="⚠️",
+        )
+        try:
+            board = _load(fallback_season)
+        except Exception as exc2:
+            st.error(f"Couldn't build the QB board for {fallback_season} either ({exc2}).", icon="🚫")
+            return
+
+    board = _with_display_name(board)
+    if has_yahoo_adp_reference:
+        board = attach_yahoo_adp(board)
+
+    fetch_fantasypros = st.checkbox(
+        "Also check against live FantasyPros expert-consensus rank", value=False, key="qb_value_fantasypros",
+        help="A real API call to FantasyPros -- a second, independent market-cost signal "
+             "alongside (or instead of) Yahoo ADP. Cached for 6 hours.",
+    )
+    has_fantasypros = False
+    if fetch_fantasypros:
+        from api.fantasypros import fetch_fantasypros_bundle, join_fantasypros_data
+
+        @st.cache_data(ttl=21600, show_spinner="Fetching live FantasyPros rankings...")
+        def _load_fantasypros(fp_season: int) -> Optional[dict]:
+            try:
+                bundle = fetch_fantasypros_bundle(fp_season)
+            except Exception as exc:
+                return {"error": str(exc)}
+            return {"rankings": bundle["rankings"], "projections": bundle["projections"]}
+
+        bundle = _load_fantasypros(default_nfl_season())
+        if bundle and "error" not in bundle:
+            board = join_fantasypros_data(board, bundle["rankings"], bundle["projections"], yahoo_id_column="yahoo_id")
+            has_fantasypros = True
+        else:
+            st.caption(f"⚠️ FantasyPros fetch failed ({bundle.get('error') if bundle else 'unknown error'}) -- skipped.")
+
+    if not has_yahoo_adp_reference and not has_fantasypros:
+        st.info("No market-cost signal available -- showing QBs by real value alone, with no ADP comparison.")
+
+    qbs = compute_qb_adp_value(board)
+    if qbs.empty:
+        st.info("No QBs found in the current pool.")
+        return
+
+    columns = ["player_name", "editorial_team_abbr", "our_qb_rank", "priority_score"]
+    rename = {"editorial_team_abbr": "team", "our_qb_rank": "our QB rank", "priority_score": "real value pts"}
+    if has_yahoo_adp_reference:
+        columns += ["yahoo_adp", "yahoo_position_rank", "yahoo_value_score"]
+        rename["yahoo_adp"] = "Yahoo ADP"
+        rename["yahoo_position_rank"] = "Yahoo QB rank"
+        rename["yahoo_value_score"] = "value vs. Yahoo ADP"
+    if has_fantasypros:
+        columns += ["fantasypros_pos_rank", "fantasypros_value_score"]
+        rename["fantasypros_pos_rank"] = "FantasyPros QB rank"
+        rename["fantasypros_value_score"] = "value vs. FantasyPros"
+    columns += ["value_notes"]
+    rename["value_notes"] = "notes"
+
+    display = qbs[columns].rename(columns=rename)
+    highlight_col = "value vs. Yahoo ADP" if has_yahoo_adp_reference else (
+        "value vs. FantasyPros" if has_fantasypros else "real value pts"
+    )
+    st.dataframe(_style_table(display, highlight_col=highlight_col), use_container_width=True, hide_index=True)
+
+
 def main() -> None:
     from api.nfl_enrichment import default_stats_season
 
@@ -1794,7 +2041,10 @@ def main() -> None:
             st.error(f"Couldn't build the real player pool ({exc}). Falling back to mock data for now.", icon="🚫")
             players_df = build_mock_players_df()
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs(
+    (
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11,
+        tab12, tab13, tab14, tab15, tab16,
+    ) = st.tabs(
         [
             "Priority Board",
             "Rookie Radar",
@@ -1804,11 +2054,14 @@ def main() -> None:
             "Breakout Radar",
             "TE Difference-Makers",
             "O-Line Power Rankings",
+            "Coaching Changes",
             "Team Change Impact",
             "Run Game Outlook",
+            "Next Man Up",
             "Free Agent Suggestions",
             "Trade Finder",
             "Draft Board",
+            "QB Value Finder",
         ]
     )
     with tab1:
@@ -1828,10 +2081,14 @@ def main() -> None:
     with tab8:
         render_oline_rankings()
     with tab9:
-        render_team_change_report()
+        render_coaching_changes()
     with tab10:
-        render_run_game_outlook()
+        render_team_change_report()
     with tab11:
+        render_run_game_outlook()
+    with tab12:
+        render_next_man_up()
+    with tab13:
         # Deliberately NOT `players_df` when that's the real Yahoo-free pool:
         # Free Agent Suggestions needs a real MULTI-TEAM roster to mean
         # anything (whose roster is "my weakest player" relative to), which
@@ -1841,10 +2098,12 @@ def main() -> None:
         # isn't live.
         free_agent_pool = players_df if data_source == "Live Yahoo data" else build_mock_players_df()
         render_free_agent_suggestions(free_agent_pool, use_live=(data_source == "Live Yahoo data"), credentials=credentials)
-    with tab12:
+    with tab14:
         render_trade_finder(use_live=(data_source == "Live Yahoo data"), credentials=credentials)
-    with tab13:
+    with tab15:
         render_draft_board()
+    with tab16:
+        render_qb_value_finder()
 
 
 if __name__ == "__main__":
