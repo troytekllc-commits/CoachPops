@@ -93,10 +93,12 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
     **O-Line Power Rankings**, **Team Change Impact**, **Run Game Outlook**
     (see below), **Free Agent Suggestions**, **Trade Finder** (see "Free
     Agent Suggestions & Trade Finder" below), and **Draft Board** (see
-    below). A sidebar toggle switches between mock data and live Yahoo
-    data; O-Line Power Rankings/Team Change Impact/**Run Game
-    Outlook**/**Draft Board** (plus Priority Board's O-Line/Team Change
-    context) work with zero Yahoo access — pure `nfl_data_py`. Every tab's
+    below). A sidebar toggle switches between three "Waiver wire data"
+    sources — **Mock data**, **Real data (no Yahoo)** (see below), and
+    **Live Yahoo data**; O-Line Power Rankings/Team Change Impact/**Run
+    Game Outlook**/**Draft Board** (plus Priority Board's O-Line/Team
+    Change context) work with zero Yahoo access regardless — pure
+    `nfl_data_py`. Every tab's
     table is styled via `_style_table()` to match the blue theme
     (`.streamlit/config.toml`): light zebra-striped row banding plus a
     blue-intensity gradient (darker = better) on that tab's key ranking
@@ -148,6 +150,52 @@ matching this project's existing "flag, don't penalize" design for softer
 risk signals (QB sophomore slump, high wind). The one exception is the
 FA/Trade IR/PUP/NA/suspended exclusion above, which is a hard filter, not a
 caution -- that's a categorical "can't play," not a risk level.
+
+### "Real data (no Yahoo)" — a genuine substitute while Yahoo approval is pending
+
+The sidebar's third "Waiver wire data" option builds a REAL, full-coverage
+player pool with zero Yahoo dependency -- not a demo, and not limited to
+a handful of elite names. `load_real_players_df()` (`ui/dashboard.py`)
+reuses `build_draft_board_pool()` (the same real, ~900-player, fully
+enriched pool Draft Board is built from) and layers on real, current
+injury status and trending-add data from Sleeper's free API
+(`attach_sleeper_status_and_trending()` in `api/nfl_enrichment.py`,
+`api/external_sources.py`'s gsis-keyed Sleeper functions) -- closing the
+one gap that pool otherwise had: no live `status` field at all (nflverse's
+own weekly injury report can't see roster-level IR/PUP designations).
+
+This powers Priority Board, Rookie Radar, QB Konami Code, IR Stash
+Targets, WR3 Floor Finder, Breakout Radar, and TE Difference-Makers with
+real data. **Free Agent Suggestions and Trade Finder deliberately don't
+use it** -- both need a real *multi-team roster* (whose roster is "my
+weakest player" relative to?), which no player-pool API can provide; only
+Yahoo or a synthetic mock league can. They keep showing mock data in this
+mode, by design, rather than silently pairing a real free-agent pool with
+a fake roster.
+
+**A real, known limitation this surfaced**: `apply_rookie_bump()` (Rookie
+Radar) works by bumping a player's *existing* baseline projection, which
+this pool derives from their most recent real season's PPG
+(`estimate_projected_points_by_week()`). A true incoming rookie has no
+NFL history at all, so that baseline -- and therefore their bumped
+back-half projection -- is genuinely `0`, every time, regardless of real
+draft capital. Their `draft_capital` and `is_rookie` flag are still real
+and correct (and feed Priority Board's specialist bonus and Draft Board
+directly), but Rookie Radar's own specific "bumped back-half points"
+number isn't a meaningful signal for a true rookie under this pool --
+only for a young player already partway into their second season. This
+is a structural gap in the bump model itself, not something Yahoo's live
+projections happen to paper over for free -- fixing it for real would
+need a genuine rookie-projection baseline (e.g. draft-slot-implied usage),
+not just a data-source swap.
+
+Also fixed while validating this end-to-end: nflverse's own roster data
+uses `"AZ"` for Arizona while its play-by-play data uses `"ARI"` --
+`TEAM_ABBR_NORMALIZATION` didn't cover that mismatch, which would have
+silently broken every team-keyed join for Arizona players (O-Line
+context, coaching-change lookups, offense context) the same way the
+earlier-discovered `"AZ"`-style mismatches did. Now normalized like every
+other non-standard code nflverse uses.
 
 ### Priority Board
 

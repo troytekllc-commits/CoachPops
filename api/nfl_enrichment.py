@@ -48,12 +48,15 @@ future enhancement rather than shipped half-reliable.
 from __future__ import annotations
 
 import datetime
+import logging
 import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # Manually maintained OC/DC-hire CSV -- see load_manual_coordinator_changes()
 # below for why this is manual instead of pulled from an API.
@@ -527,7 +530,7 @@ def build_ngs_passing_lookup(season: int) -> Dict[str, dict]:
 # rankings (New England showed up as both "NWE" and "NE") before this map
 # was extended to cover them.
 TEAM_ABBR_NORMALIZATION = {
-    "LA": "LAR", "OAK": "LV", "SD": "LAC", "STL": "LAR", "WSH": "WAS",
+    "LA": "LAR", "OAK": "LV", "SD": "LAC", "STL": "LAR", "WSH": "WAS", "AZ": "ARI",
     "GNB": "GB", "KAN": "KC", "LVR": "LV", "NOR": "NO", "NWE": "NE", "SFO": "SF", "TAM": "TB",
 }
 
@@ -993,6 +996,45 @@ def build_draft_board_pool(
     if df.empty:
         return df
     return enrich_players_dataframe(df, season, key_by="player_id", roster_season=roster_season)
+
+
+def attach_sleeper_status_and_trending(players_df: pd.DataFrame) -> pd.DataFrame:
+    """Overlays real, current `status` (Questionable/Doubtful/Out/IR/PUP/...)
+    and `sleeper_trending_adds` from Sleeper's free API onto
+    `build_draft_board_pool()`'s Yahoo-free pool, keyed by `player_id`
+    (gsis ID -- see `api/external_sources.py`'s gsis-keyed Sleeper
+    functions). This is what makes that pool usable as a genuine
+    Yahoo-independent substitute for a live Yahoo `players_df`: without
+    it, `status` is always `""` (IR Stash Targets would always be empty)
+    and `sleeper_trending_adds` is always missing (one of Breakout Radar's
+    signals never fires).
+
+    Never raises -- a Sleeper fetch failure (network hiccup, schema
+    change) degrades to leaving whatever `status`/`sleeper_trending_adds`
+    the pool already had (its own `""`/``None`` defaults), logged, not
+    surfaced as an error to the caller.
+    """
+    from api.external_sources import build_sleeper_gsis_trending_lookup, build_sleeper_injury_status_lookup
+
+    df = players_df.copy()
+    if "status" not in df.columns:
+        df["status"] = ""
+    if "sleeper_trending_adds" not in df.columns:
+        df["sleeper_trending_adds"] = None
+
+    try:
+        status_lookup = build_sleeper_injury_status_lookup()
+        trending_lookup = build_sleeper_gsis_trending_lookup()
+    except Exception as exc:
+        logger.warning("Sleeper fetch failed (%s) -- status/sleeper_trending_adds left as-is.", exc)
+        return df
+
+    player_ids = df["player_id"].astype(str)
+    sleeper_status = player_ids.map(lambda pid: status_lookup.get(pid, {}).get("status"))
+    df["status"] = sleeper_status.where(sleeper_status.notna() & (sleeper_status != ""), df["status"])
+    sleeper_trending = player_ids.map(trending_lookup)
+    df["sleeper_trending_adds"] = sleeper_trending.where(sleeper_trending.notna(), df["sleeper_trending_adds"])
+    return df
 
 
 # --- Yahoo premium draft reference (manual, name-matched -- see caveat) -

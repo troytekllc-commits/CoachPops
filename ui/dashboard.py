@@ -1317,6 +1317,24 @@ def load_live_players_df(
     )
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_real_players_df(season: int) -> pd.DataFrame:
+    """A genuine, Yahoo-free player pool for the "Real data (no Yahoo)"
+    sidebar option -- the same real, full-coverage pool Draft Board uses
+    (`build_draft_board_pool()`), with real current injury status/trending
+    adds from Sleeper layered on top (`attach_sleeper_status_and_trending()`)
+    to close the one gap that pool otherwise has for these tabs: no live
+    `status` field at all. Falls back one season automatically on the same
+    known, real nflverse weekly-stats gap Draft Board handles."""
+    from api.nfl_enrichment import attach_sleeper_status_and_trending, build_draft_board_pool
+
+    try:
+        pool = build_draft_board_pool(season)
+    except Exception:
+        pool = build_draft_board_pool(season - 1)
+    return attach_sleeper_status_and_trending(pool)
+
+
 def _load_league_rosters(use_live: bool, credentials: Optional[dict]):
     """Returns `(rosters_df, my_team_id)` for Free Agent Suggestions/Trade
     Finder: live Yahoo rosters (every team, via `api/player_mapper.py`'s
@@ -1598,11 +1616,19 @@ def main() -> None:
         st.header("Data source")
         data_source = st.radio(
             "Waiver wire data",
-            options=["Mock data", "Live Yahoo data"],
+            options=["Mock data", "Real data (no Yahoo)", "Live Yahoo data"],
             index=0,
-            disabled=not yahoo_available,
-            help=None if yahoo_available else "Create private.json first (see README).",
+            help=(
+                "\"Real data (no Yahoo)\" builds a genuine, full-coverage player pool from "
+                "nfl_data_py + Sleeper -- zero Yahoo dependency, unlike mock data's synthetic "
+                "demo players. Applies to Priority Board, Rookie Radar, QB Konami Code, IR Stash "
+                "Targets, WR3 Floor Finder, Breakout Radar, and TE Difference-Makers -- Free Agent "
+                "Suggestions/Trade Finder still need a real multi-team roster (Yahoo or a mock "
+                "league), which no player-pool API can substitute for."
+            ),
         )
+        if data_source == "Live Yahoo data" and not yahoo_available:
+            st.caption("⚠️ No Yahoo credentials found (create `private.json` -- see README). Showing mock data instead.")
         live_count_limit = st.slider(
             "Players to fetch (live only)", min_value=5, max_value=100, value=25, step=5,
             help="Each player costs one extra Yahoo API call for season stats.",
@@ -1617,7 +1643,10 @@ def main() -> None:
         )
         nfl_season = st.number_input(
             "NFL season", min_value=2015, max_value=2035, value=default_stats_season(), step=1,
-            disabled=data_source != "Live Yahoo data" or not enrich_with_nfl_data,
+            disabled=data_source == "Mock data" or (data_source == "Live Yahoo data" and not enrich_with_nfl_data),
+            help="For \"Real data\": the last season with real played games to draw production "
+                 "from (team/rookie/coaching context always uses the real current season "
+                 "regardless -- see README's \"A note on season defaults\").",
         )
 
     # A local private.json file always wins if present (matches local-dev
@@ -1655,11 +1684,31 @@ def main() -> None:
                 icon="🚫",
             )
             players_df = build_mock_players_df()
+    elif data_source == "Real data (no Yahoo)":
+        try:
+            with st.spinner("Building a real, Yahoo-free player pool (nfl_data_py + Sleeper)..."):
+                players_df = load_real_players_df(int(nfl_season))
+            st.success(
+                f"Showing a real, Yahoo-free player pool ({int(nfl_season)} season stats, current "
+                "roster/coaching context) -- zero Yahoo dependency, unlike mock data's synthetic "
+                "demo players.",
+                icon="✅",
+            )
+            st.caption(
+                "Built the same way as Draft Board: every real skill-position player, real target "
+                "share/red-zone share/coaching changes, plus real current injury status and "
+                "trending-add data from Sleeper (see `api/external_sources.py`). Free Agent "
+                "Suggestions/Trade Finder below still show mock data -- they need a real "
+                "multi-team roster, which no player-pool API can substitute for."
+            )
+        except Exception as exc:
+            st.error(f"Couldn't build the real player pool ({exc}). Falling back to mock data for now.", icon="🚫")
+            players_df = build_mock_players_df()
     else:
         st.warning(
-            "Showing **mock data** shaped to match Yahoo's real `/players` response. "
-            "Create `private.json` (see README) and select \"Live Yahoo data\" in the "
-            "sidebar to see your real waiver wire.",
+            "Showing **mock data** shaped to match Yahoo's real `/players` response. Select "
+            "\"Real data (no Yahoo)\" for a genuine Yahoo-free player pool, or create "
+            "`private.json` (see README) and select \"Live Yahoo data\" for your real waiver wire.",
             icon="⚠️",
         )
         players_df = build_mock_players_df()
@@ -1702,7 +1751,15 @@ def main() -> None:
     with tab10:
         render_run_game_outlook()
     with tab11:
-        render_free_agent_suggestions(players_df, use_live=(data_source == "Live Yahoo data"), credentials=credentials)
+        # Deliberately NOT `players_df` when that's the real Yahoo-free pool:
+        # Free Agent Suggestions needs a real MULTI-TEAM roster to mean
+        # anything (whose roster is "my weakest player" relative to), which
+        # only Yahoo or the synthetic mock league can provide -- a real
+        # free-agent pool paired with a mock roster would silently mix two
+        # unrelated data sources. Falls back to the same mock players_df as
+        # "Mock data" mode whenever Yahoo isn't live.
+        free_agent_pool = players_df if data_source == "Live Yahoo data" else build_mock_players_df()
+        render_free_agent_suggestions(free_agent_pool, use_live=(data_source == "Live Yahoo data"), credentials=credentials)
     with tab12:
         render_trade_finder(use_live=(data_source == "Live Yahoo data"), credentials=credentials)
     with tab13:

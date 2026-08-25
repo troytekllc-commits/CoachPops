@@ -1,10 +1,15 @@
 """External, non-Yahoo/non-nfl_data_py data sources.
 
-Currently just Sleeper's free, no-auth public API, used for a market-wide
-"trending adds" signal that works independently of Yahoo -- a genuine
-cross-platform complement to Breakout Radar's Yahoo-only `percent_owned`/
-`percent_owned_delta` (which only reflects what's happening inside *this*
-Yahoo league).
+Sleeper's free, no-auth public API, used for two real, Yahoo-independent
+signals: a market-wide "trending adds" signal (a genuine cross-platform
+complement to Breakout Radar's Yahoo-only `percent_owned`/
+`percent_owned_delta`, which only reflects what's happening inside *this*
+Yahoo league) and, more importantly, real CURRENT injury/roster status
+(Questionable/Doubtful/Out/IR/PUP/...) for the entirely Yahoo-free player
+pool (`build_draft_board_pool()`) -- the one live signal that pool
+otherwise has no source for at all (nflverse's own weekly injury report
+can't see roster-level IR/PUP designations; see
+`build_season_injury_durability_lookup()`'s docstring).
 
 Why Sleeper: no API key, no OAuth, no approval process (unlike Yahoo's
 Fantasy Sports API access application) -- just plain HTTP GET requests.
@@ -107,4 +112,91 @@ def build_sleeper_trending_lookup(lookback_hours: int = 24, limit: int = 200) ->
         sleeper_to_yahoo[sleeper_id]: count
         for sleeper_id, count in trending.items()
         if sleeper_id in sleeper_to_yahoo
+    }
+
+
+# --- gsis-keyed variants: for the Yahoo-free real player pool ---------------
+# Sleeper's player records carry a `gsis_id` field directly (nflverse's own
+# ID) -- confirmed live -- so these don't need the yahoo_id round-trip above;
+# they key straight off gsis_id, matching build_draft_board_pool()'s
+# `player_id` column. This is what makes Sleeper's real, current injury
+# status (including roster-level "IR"/"PUP", which nflverse's own weekly
+# injury report can't provide -- see build_season_injury_durability_lookup()'s
+# docstring on why) usable for the Yahoo-free tools, closing the one real gap
+# build_draft_board_pool() had: no live `status` field at all.
+SLEEPER_STATUS_TO_YAHOO_STYLE = {
+    "Injured Reserve": "IR",
+    "Physically Unable to Perform": "PUP",
+    "Non Football Injury": "NFI",
+    "Inactive": "",  # a real person just not on an active roster right now -- not itself an injury signal
+    "Active": "",
+    "Practice Squad": "",
+}
+
+
+def build_gsis_id_to_sleeper_id_map() -> Dict[str, str]:
+    """``{gsis_id: sleeper_player_id}`` -- direct, no crosswalk detour
+    needed (unlike the yahoo_id version above, gsis_id is a field Sleeper
+    already carries per player). Same collision handling as
+    `build_yahoo_id_to_sleeper_id_map()` -- a placeholder/inactive
+    duplicate never wins over a real, active entry."""
+    players = _load_sleeper_players()
+
+    by_gsis_id: Dict[str, list] = {}
+    for sleeper_id, info in players.items():
+        gsis_id = info.get("gsis_id")
+        if gsis_id:
+            by_gsis_id.setdefault(str(gsis_id).strip(), []).append((sleeper_id, info))
+
+    result: Dict[str, str] = {}
+    for gsis_id, entries in by_gsis_id.items():
+        if len(entries) == 1:
+            result[gsis_id] = entries[0][0]
+            continue
+        non_placeholder = [e for e in entries if e[1].get("full_name") != "Duplicate Player"]
+        active_real = [e for e in non_placeholder if e[1].get("active")]
+        winner = active_real[0] if active_real else (non_placeholder[0] if non_placeholder else entries[0])
+        result[gsis_id] = winner[0]
+
+    return result
+
+
+def build_sleeper_injury_status_lookup() -> Dict[str, dict]:
+    """``{gsis_id: {"status": "...", "injury_body_part": "..."}}`` --
+    Sleeper's real, current injury/roster status, restyled to this
+    project's existing Yahoo-status vocabulary (see
+    `data/calculators.py`'s `INJURY_STATUS_LABELS`) so it drops straight
+    into the same `status` column every calculator already expects.
+
+    Prefers Sleeper's own `injury_status` (Questionable/Doubtful/Out/IR/
+    PUP/Sus/etc. -- a real weekly-report-style tag) when set; falls back
+    to a restyled `status` (Sleeper's broader Active/Inactive/Injured
+    Reserve/... roster state) otherwise. Never fabricates a status for a
+    healthy, active player -- both map to `""`, same as Yahoo's own
+    convention for "nothing to report."
+    """
+    players = _load_sleeper_players()
+    lookup: Dict[str, dict] = {}
+    for info in players.values():
+        gsis_id = info.get("gsis_id")
+        if not gsis_id:
+            continue
+        gsis_id = str(gsis_id).strip()
+        injury_status = info.get("injury_status")
+        status = injury_status or SLEEPER_STATUS_TO_YAHOO_STYLE.get(info.get("status"), info.get("status") or "")
+        lookup[gsis_id] = {"status": status, "injury_body_part": info.get("injury_body_part")}
+    return lookup
+
+
+def build_sleeper_gsis_trending_lookup(lookback_hours: int = 24, limit: int = 200) -> Dict[str, int]:
+    """``{gsis_id: sleeper_add_count}`` -- the gsis-keyed twin of
+    `build_sleeper_trending_lookup()`, for the Yahoo-free real player
+    pool."""
+    gsis_to_sleeper = build_gsis_id_to_sleeper_id_map()
+    sleeper_to_gsis = {v: k for k, v in gsis_to_sleeper.items()}
+    trending = fetch_trending_adds(lookback_hours, limit)
+    return {
+        sleeper_to_gsis[sleeper_id]: count
+        for sleeper_id, count in trending.items()
+        if sleeper_id in sleeper_to_gsis
     }
