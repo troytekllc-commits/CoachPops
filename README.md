@@ -456,6 +456,44 @@ This is entirely optional — without a key, every weather field simply
 stays empty (logged, never an error), same as any other missing enrichment
 source in this project.
 
+### FantasyPros projections/rankings (optional, `fantasypros_api_key`)
+
+Draft Board can show a real, live third-party check — FantasyPros' own
+season-long projected points and expert-consensus rank/tier for the
+upcoming season (see `api/fantasypros.py`) — joined onto players by a
+real Yahoo ID crosswalk, not name-matching. Get a key from
+https://www.fantasypros.com/accounts/apidata/ and set it the same way as
+the weather key, either as an environment variable:
+
+```bash
+export FANTASYPROS_API_KEY=your-key-here
+```
+
+or in `private.json`:
+
+```json
+{
+  "consumer_key": "...",
+  "fantasypros_api_key": "your-key-here"
+}
+```
+
+**Real, discovered limitation**: the free API tier caps every request at
+exactly 10 players — regardless of how many actually exist for that
+query — confirmed directly against the live API, not documented anywhere
+obvious. `api/fantasypros.py` works around this by fetching each of the 6
+positions (QB/RB/WR/TE/K/DST) separately, each with its own 10-player cap,
+for up to ~60 real players total — the top of the draft board, not the
+full player pool. It also needs a real ~1-second delay between each of
+those requests (a live 429 rate limit hits without it) — a cold cache
+costs a few seconds accordingly, which is why Draft Board's fetch is
+`@st.cache_data`-cached for 6 hours and gated behind a checkbox you can
+uncheck to skip the network call entirely.
+
+Like the weather key, this is entirely optional — without one, or if the
+API call fails for any reason, Draft Board simply shows blank
+FantasyPros columns rather than erroring.
+
 ## Running the dashboard
 
 ```bash
@@ -507,18 +545,20 @@ gitignored on purpose, see the Yahoo credentials section above). Two tabs
 **Priority Board**'s context work fully live at this point, with zero
 extra setup, since they don't need Yahoo at all.
 
-### Adding your Yahoo/weather credentials to the deployed app
+### Adding your Yahoo/weather/FantasyPros credentials to the deployed app
 
 A hosted server has no local filesystem to put a `private.json` file on,
 so credentials go through Streamlit's own **Secrets** manager instead
-(Settings → Secrets, in your deployed app's dashboard) — `api/yahoo_auth.py`
-and `api/weather.py` both check for this automatically (via `st.secrets`)
-whenever there's no local `private.json` file, no code changes needed.
+(Settings → Secrets, in your deployed app's dashboard) — `api/yahoo_auth.py`,
+`api/weather.py`, and `api/fantasypros.py` all check for this automatically
+(via `st.secrets`) whenever there's no local `private.json` file, no code
+changes needed.
 
 Paste in:
 
 ```toml
 openweathermap_api_key = "your-openweathermap-key"
+fantasypros_api_key = "your-fantasypros-key"
 
 private_json = """
 {"consumer_key": "...", "consumer_secret": "...", "league_id": "...", "game_code": "nfl", "game_id": null, "redirect_uri": "https://localhost:8080", "access_token": {...}}

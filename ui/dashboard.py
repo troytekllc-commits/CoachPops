@@ -1442,11 +1442,13 @@ def render_draft_board() -> None:
     synthetic projection for the upcoming season). Built with ZERO Yahoo
     dependency, unlike every other player-level tab -- this is pure
     `nfl_data_py`, same as O-Line Power Rankings/Team Change Impact."""
+    from api.fantasypros import attach_fantasypros_data
     from api.nfl_enrichment import (
         DEFAULT_YAHOO_DRAFT_REFERENCE_CSV,
         DRAFT_BOARD_POSITIONS,
         attach_yahoo_adp,
         build_draft_board_pool,
+        default_nfl_season,
         default_stats_season,
     )
 
@@ -1456,8 +1458,8 @@ def render_draft_board() -> None:
         "**this league's own scoring** -- not a generic site-wide point total -- adjusted by the "
         "same real signals as the rest of this app (rookie draft capital, coaching changes, Next "
         "Gen Stats, Vegas game script, and more; see Priority Board). This is NOT a synthetic "
-        "projection for the upcoming season -- no real projections feed is connected yet (see "
-        "README's \"paid services\" notes) -- it's a serious, defensible starting point for "
+        "projection for the upcoming season on its own -- see \"FantasyPros\" below for a real "
+        "external projection where it's available -- it's a serious, defensible starting point for "
         "ranking players, not a finished cheat sheet that already knows about every offseason "
         "move. Needs zero Yahoo access, unlike every other player-level tab."
     )
@@ -1469,6 +1471,14 @@ def render_draft_board() -> None:
             "where the two disagree. Name-matched, not an ID join -- see README for how to refresh "
             "it. Expect real, harmless misses for this year's rookies (not in last season's stats)."
         )
+    st.caption(
+        "Also shown, where available: a real, live third-party check from FantasyPros -- their "
+        "own season-long projected points and expert-consensus rank/tier for the upcoming season, "
+        "joined by a real Yahoo ID crosswalk (not name-matched). The API key behind this is "
+        "FantasyPros' free tier, which caps real coverage at roughly the top 10 players per "
+        "position (~60 total) -- expect this to be populated near the top of the board and blank "
+        "further down; see `api/fantasypros.py` for the exact, discovered limitation."
+    )
 
     season = st.number_input(
         "Season (last completed season's stats)", min_value=2015, max_value=2035,
@@ -1511,6 +1521,36 @@ def render_draft_board() -> None:
         # earlier than this board would -- a possible overdraft/avoid.
         board["value_vs_yahoo_adp"] = board["yahoo_position_rank"] - board["our_position_rank"]
 
+    fetch_fantasypros = st.checkbox(
+        "Fetch live FantasyPros projections/rankings", value=True, key="draft_board_fantasypros",
+        help="A real API call against FantasyPros' free tier (~top 10 players/position -- see "
+             "the caption above). Cached for 6 hours; uncheck to skip the network call entirely.",
+    )
+    has_fantasypros = False
+    if fetch_fantasypros:
+        from api.fantasypros import join_fantasypros_data
+
+        @st.cache_data(ttl=21600, show_spinner="Fetching live FantasyPros projections/rankings...")
+        def _load_fantasypros(fp_season: int) -> Optional[dict]:
+            from api.fantasypros import fetch_fantasypros_bundle
+
+            try:
+                bundle = fetch_fantasypros_bundle(fp_season)
+            except Exception as exc:
+                return {"error": str(exc)}
+            return {"rankings": bundle["rankings"], "projections": bundle["projections"]}
+
+        fantasypros_season = default_nfl_season()
+        bundle = _load_fantasypros(fantasypros_season)
+        if bundle and "error" not in bundle:
+            board = join_fantasypros_data(board, bundle["rankings"], bundle["projections"], yahoo_id_column="yahoo_id")
+            has_fantasypros = True
+        else:
+            st.caption(
+                f"⚠️ FantasyPros fetch failed ({bundle.get('error') if bundle else 'unknown error'}) -- "
+                "skipped for this load."
+            )
+
     filtered = board[board["display_position"].isin(position_filter)]
     if filtered.empty:
         st.info("No players match the selected position filter.")
@@ -1521,6 +1561,11 @@ def render_draft_board() -> None:
     if has_yahoo_adp_reference:
         columns += ["yahoo_adp", "yahoo_tier", "value_vs_yahoo_adp"]
         rename["value_vs_yahoo_adp"] = "value vs. Yahoo ADP"
+    if has_fantasypros:
+        columns += ["fantasypros_projected_points", "fantasypros_pos_rank", "fantasypros_tier"]
+        rename["fantasypros_projected_points"] = "FantasyPros proj. pts"
+        rename["fantasypros_pos_rank"] = "FantasyPros pos rank"
+        rename["fantasypros_tier"] = "FantasyPros tier"
     columns += ["priority_signals", "priority_cautions"]
 
     display = filtered[columns].rename(columns=rename)

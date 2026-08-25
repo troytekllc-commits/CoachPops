@@ -887,6 +887,12 @@ def build_draft_board_pool(season: int, positions: tuple = DRAFT_BOARD_POSITIONS
         rows.append({
             "player_key": f"nflverse.{gsis_id}",
             "player_id": gsis_id,
+            # A real ID crosswalk (import_seasonal_rosters()'s own
+            # yahoo_id column -- see this module's docstring), not a name
+            # guess -- only ~half of rostered players have one. Lets
+            # api/fantasypros.py's attach_fantasypros_data() join real
+            # FantasyPros projections/rankings onto this Yahoo-free pool.
+            "yahoo_id": row.get("yahoo_id"),
             "name": {
                 "full": row.get("player_name") or gsis_id,
                 # Prefer the public "football name" over the legal first
