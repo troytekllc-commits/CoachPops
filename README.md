@@ -105,6 +105,50 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
   - `api/run_game_analytics.py` — **Run Game Outlook**'s calculators (see
     below).
 
+### Injury data across the app
+
+Injury information isn't one tab's feature -- it's woven into every layer
+that touches a player, from two independent sources depending on whether
+Yahoo is available:
+
+- **Yahoo's live `status` field** (`""`, `"Q"`, `"D"`, `"O"`, `"IR"`,
+  `"PUP"`, etc.) is real-time and already present on every Yahoo-backed
+  player record. Previously this was only ever read by the dedicated **IR
+  Stash Targets** tab -- every other tab (including Priority Board itself)
+  had zero visibility into whether a top-ranked player was actually
+  available to play. Now:
+  - `find_breakout_signals()` raises a `"Currently {status}"` caution for
+    ANY non-empty status -- this flows into `priority_cautions` on
+    **Priority Board** and **Breakout Radar** automatically, since both
+    already surface that function's cautions.
+  - **Free Agent Suggestions** (`find_free_agent_upgrades()`) and **Trade
+    Finder** (`find_trade_candidates()`/`_pick_tradeable_player()`) now
+    both exclude any player currently on IR/PUP/NA/suspended
+    (`UNAVAILABLE_INJURY_STATUSES` in `data/calculators.py`) from being
+    recommended as an add or trade target -- recommending to acquire
+    someone who structurally can't play right now isn't useful advice. A
+    merely Questionable/Doubtful/Out player is still eligible (that's
+    single-game risk, not a reason to skip a real stash) but shown with
+    their real status in a new `*_status` column either way.
+- **nfl_data_py's real injury report** (`import_injuries()`) is the only
+  option for the Yahoo-independent tools (**Draft Board**, **Run Game
+  Outlook**) that have no live Yahoo status to draw on. Rather than fake a
+  "current" status for data that's actually last season's,
+  `build_season_injury_durability_lookup()` (`api/nfl_enrichment.py`)
+  computes real durability HISTORY -- how many distinct weeks a player was
+  listed "Out" -- as a `weeks_flagged_out` enrichment field. `weeks_flagged_out
+  >= 3` raises a "missed N week(s) with injury" caution the same way, and
+  Run Game Outlook's RB Bell Cow Finder shows it directly as a column (a
+  low bell-cow score paired with real weeks out means "was hurt," not "is
+  a committee back" -- a real caveat on reading a season-total workload
+  share).
+
+None of this scores against a player -- every caution here is informational,
+matching this project's existing "flag, don't penalize" design for softer
+risk signals (QB sophomore slump, high wind). The one exception is the
+FA/Trade IR/PUP/NA/suspended exclusion above, which is a hard filter, not a
+caution -- that's a categorical "can't play," not a risk level.
+
 ### Priority Board
 
 The **Priority Board** tab (`build_priority_board()` in

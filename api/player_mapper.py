@@ -171,6 +171,7 @@ def player_to_row(player, stat_id_map: Optional[Dict[int, str]] = None) -> Dict[
         "injury_opportunity": False,
         "injury_opportunity_ahead_player": None,
         "injury_opportunity_ahead_status": None,
+        "weeks_flagged_out": None,
         "team_new_head_coach": False,
         "team_head_coach_name": None,
         "team_new_offensive_coordinator": False,

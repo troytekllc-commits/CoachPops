@@ -49,6 +49,16 @@ Expected columns on the input DataFrame
 - ``qb_year1_ppg``               (float) that rookie season's PPG
 - ``percent_owned`` / ``percent_owned_delta`` (float) Yahoo's league-wide
                                   ownership % and its week-over-week change
+- ``weeks_flagged_out``          (int) how many weeks this season the player
+                                  was listed "Out" on the NFL's official
+                                  injury report -- a durability-history
+                                  signal, independent of Yahoo's live
+                                  ``status`` (see ``api/nfl_enrichment.py``'s
+                                  ``build_season_injury_durability_lookup()``);
+                                  only ever populated for players enriched via
+                                  nfl_data_py (e.g. Draft Board/Run Game
+                                  Outlook), since Yahoo-backed tools already
+                                  have a live ``status`` instead
 - ``game_script_spread`` / ``game_script_total`` / ``game_script_implied_team_total``
                                   (float) Vegas context for this week's game
                                   (positive spread = that team is favored)
@@ -369,6 +379,21 @@ SLEEPER_TRENDING_ADD_THRESHOLD = 5000  # sleeper_trending_adds -- Sleeper's own 
 HIGH_WIND_CAUTION_MPH = 15.0  # sustained wind -- the point sports-weather research shows passing volume/efficiency drops off
 WIND_CAUTION_POSITIONS = {"QB", "WR", "TE"}
 
+# Yahoo's real player `status` field is a raw abbreviation passed through
+# from its API (see yfpy's `Player.status`) -- this maps the ones we know
+# about to a plain-language label; anything else displays as-is rather than
+# silently dropping an unrecognized code. UNAVAILABLE_INJURY_STATUSES are
+# roster-level designations meaning the player structurally can't play right
+# now (as opposed to "Questionable"/"Doubtful"/"Out", which are single-game
+# risk levels -- a player can be "Out" for this week and still be exactly
+# the right waiver stash for next week).
+INJURY_STATUS_LABELS: Dict[str, str] = {
+    "Q": "Questionable", "D": "Doubtful", "O": "Out",
+    "IR": "On IR", "PUP": "On PUP", "NA": "Not Active", "SUSP": "Suspended",
+}
+UNAVAILABLE_INJURY_STATUSES = {"IR", "PUP", "NA", "SUSP"}
+DURABILITY_CAUTION_WEEKS = 3  # weeks_flagged_out at/above this triggers a durability caution
+
 
 def _efficiency_ahead_of_production_gap(players_df: pd.DataFrame) -> pd.Series:
     """Within each position group, how much higher a player's target-share
@@ -414,14 +439,24 @@ def find_breakout_signals(players_df: pd.DataFrame, min_score: float = 1.0) -> p
     wider fantasy market (not just this Yahoo league) catching on via
     Sleeper's trending-adds data (`api/external_sources.py`).
 
-    Also raises (but doesn't score against) two cautions: a QB "sophomore
-    slump" caution -- rookie QBs who finished top-15 in fantasy PPG have
-    historically *declined* more often than not in Year 2 (roughly 11 of
-    the last 14) -- a defense's film advantage apparently outweighing the
-    QB's own growth (see `api/nfl_enrichment.py`'s
-    `build_qb_year2_regression_flags()`) -- and a high-wind caution for
-    QB/WR/TE: sustained wind above `HIGH_WIND_CAUTION_MPH` historically
-    suppresses passing volume/efficiency (see `api/weather.py`).
+    Also raises (but doesn't score against) four cautions: the player's own
+    CURRENT Yahoo `status` (e.g. "Currently Doubtful", "Currently On IR --
+    unavailable to play right now") -- this is the one caution every other
+    tab that reuses these cautions (Priority Board, Free Agent Suggestions,
+    Trade Finder) previously had NO visibility into at all outside the
+    dedicated IR Stash Targets tab; a real durability-history caution
+    (`weeks_flagged_out` >= `DURABILITY_CAUTION_WEEKS`, from nfl_data_py's
+    official injury report -- see `api/nfl_enrichment.py`'s
+    `build_season_injury_durability_lookup()`, the only injury signal
+    available for Yahoo-independent tools like Draft Board/Run Game
+    Outlook); a QB "sophomore slump" caution -- rookie QBs who finished
+    top-15 in fantasy PPG have historically *declined* more often than not
+    in Year 2 (roughly 11 of the last 14) -- a defense's film advantage
+    apparently outweighing the QB's own growth (see
+    `api/nfl_enrichment.py`'s `build_qb_year2_regression_flags()`); and a
+    high-wind caution for QB/WR/TE: sustained wind above
+    `HIGH_WIND_CAUTION_MPH` historically suppresses passing volume/
+    efficiency (see `api/weather.py`).
 
     Known gap: a real signal from the same research this is built on --
     whether a rookie/sophomore's positional competition departed or
@@ -512,6 +547,17 @@ def find_breakout_signals(players_df: pd.DataFrame, min_score: float = 1.0) -> p
         if trending is not None and pd.notna(trending) and trending >= SLEEPER_TRENDING_ADD_THRESHOLD:
             score += BREAKOUT_SIGNAL_WEIGHTS["sleeper_trending"]
             signals.append(f"Trending across Sleeper ({int(trending):,} adds recently)")
+
+        status = row.get("status")
+        if status:
+            label = INJURY_STATUS_LABELS.get(status, status)
+            cautions.append(
+                f"Currently {label}" + (" -- unavailable to play right now" if status in UNAVAILABLE_INJURY_STATUSES else "")
+            )
+
+        weeks_out = row.get("weeks_flagged_out")
+        if weeks_out is not None and pd.notna(weeks_out) and weeks_out >= DURABILITY_CAUTION_WEEKS:
+            cautions.append(f"Missed {int(weeks_out)} week(s) with injury this season (durability risk)")
 
         if row.get("qb_year2_regression_caution"):
             cautions.append(
@@ -944,28 +990,36 @@ def find_free_agent_upgrades(
     min_priority_score_gain: float = 10.0,
 ) -> pd.DataFrame:
     """For each skill position on your roster, compares your weakest
-    rostered player there against the best available free agent --
-    surfaces a concrete "drop X, add Y" suggestion whenever a free agent
-    clearly beats your worst player at that position (by at least
+    rostered player there against the best AVAILABLE (i.e. not currently
+    on IR/PUP/NA/suspended -- see `UNAVAILABLE_INJURY_STATUSES`) free
+    agent -- surfaces a concrete "drop X, add Y" suggestion whenever a free
+    agent clearly beats your worst player at that position (by at least
     `min_priority_score_gain` `priority_score` points), rather than just
     listing free agents ranked in a vacuum with no connection to your
-    actual roster.
+    actual roster. A player who's merely Questionable/Doubtful/Out for
+    this week is still eligible -- that's a single-game risk, not a reason
+    to skip an otherwise-correct stash -- but is flagged via `add_status`
+    either way.
 
     Both inputs need a `priority_score` column (see `build_priority_board()`).
 
     Returns:
-        DataFrame with `position`, `drop_player`/`drop_priority_score`,
-        `add_player`/`add_priority_score`, `priority_score_gain` columns,
-        sorted descending by gain. Empty if nothing clears the threshold.
+        DataFrame with `position`, `drop_player`/`drop_priority_score`/
+        `drop_status`, `add_player`/`add_priority_score`/`add_status`,
+        `priority_score_gain` columns, sorted descending by gain. Empty if
+        nothing clears the threshold.
     """
     columns = [
-        "position", "drop_player", "drop_priority_score",
-        "add_player", "add_priority_score", "priority_score_gain",
+        "position", "drop_player", "drop_priority_score", "drop_status",
+        "add_player", "add_priority_score", "add_status", "priority_score_gain",
     ]
     suggestions = []
     for position in SKILL_POSITIONS:
         mine = my_roster_df[my_roster_df["display_position"] == position]
-        available = free_agents_df[free_agents_df["display_position"] == position]
+        available = free_agents_df[
+            (free_agents_df["display_position"] == position)
+            & (~free_agents_df["status"].isin(UNAVAILABLE_INJURY_STATUSES))
+        ]
         if mine.empty or available.empty:
             continue
         worst_mine = mine.sort_values("priority_score", ascending=True).iloc[0]
@@ -976,8 +1030,10 @@ def find_free_agent_upgrades(
                 "position": position,
                 "drop_player": _player_display_name(worst_mine),
                 "drop_priority_score": worst_mine["priority_score"],
+                "drop_status": worst_mine.get("status") or None,
                 "add_player": _player_display_name(best_fa),
                 "add_priority_score": best_fa["priority_score"],
+                "add_status": best_fa.get("status") or None,
                 "priority_score_gain": gain,
             })
 
@@ -992,11 +1048,15 @@ def _pick_tradeable_player(
     """The most giveable startable player a team has at `position`: the
     LOWEST `priority_score` player that still clears replacement level --
     a real asset to whoever receives it, but the team's most spare one at
-    that position, not their best starter."""
+    that position, not their best starter. Excludes anyone currently on
+    IR/PUP/NA/suspended (`UNAVAILABLE_INJURY_STATUSES`) -- neither side of
+    a proposed trade should be a player who structurally can't play right
+    now, whichever direction they'd be moving."""
     pool = rostered_players_df[
         (rostered_players_df["team_id"] == team_id)
         & (rostered_players_df["display_position"] == position)
         & (rostered_players_df["priority_score"] >= replacement_level)
+        & (~rostered_players_df["status"].isin(UNAVAILABLE_INJURY_STATUSES))
     ]
     if pool.empty:
         return None
@@ -1037,13 +1097,18 @@ def find_trade_candidates(
 
     Returns:
         DataFrame with `other_team_id`, `you_give`/`you_give_position`/
-        `you_give_value`, `you_get`/`you_get_position`/`you_get_value`,
-        `fairness_gap_pct`, and `fit_score` columns, sorted descending by
-        fit. Empty if no genuine two-way fit exists anywhere in the league.
+        `you_give_value`/`you_give_status`, `you_get`/`you_get_position`/
+        `you_get_value`/`you_get_status`, `fairness_gap_pct`, and
+        `fit_score` columns, sorted descending by fit. Both players are
+        guaranteed available to play (never IR/PUP/NA/suspended -- see
+        `_pick_tradeable_player()`); a Questionable/Doubtful/Out
+        `*_status` is still surfaced as real single-game risk context, not
+        excluded. Empty if no genuine two-way fit exists anywhere in the
+        league.
     """
     columns = [
-        "other_team_id", "you_give", "you_give_position", "you_give_value",
-        "you_get", "you_get_position", "you_get_value", "fairness_gap_pct", "fit_score",
+        "other_team_id", "you_give", "you_give_position", "you_give_value", "you_give_status",
+        "you_get", "you_get_position", "you_get_value", "you_get_status", "fairness_gap_pct", "fit_score",
     ]
     requirements = roster_requirements or DEFAULT_ROSTER_REQUIREMENTS
     replacement_levels = compute_replacement_level(rostered_players_df, requirements, num_teams)
@@ -1089,9 +1154,11 @@ def find_trade_candidates(
                     "you_give": _player_display_name(my_player),
                     "you_give_position": give_position,
                     "you_give_value": my_value,
+                    "you_give_status": my_player.get("status") or None,
                     "you_get": _player_display_name(their_player),
                     "you_get_position": get_position,
                     "you_get_value": their_value,
+                    "you_get_status": their_player.get("status") or None,
                     "fairness_gap_pct": gap,
                     "fit_score": min(my_surplus, -their_need) + min(their_surplus, -my_need),
                 })

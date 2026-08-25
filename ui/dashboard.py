@@ -112,6 +112,7 @@ _MOCK_LEAGUE_ENRICHMENT_DEFAULTS = {
     "ngs_separation": None, "ngs_yac_above_expectation": None, "ngs_time_to_throw": None, "ngs_cpoe": None,
     "game_wind_mph": None, "game_precip_probability": None, "game_is_dome": None, "sleeper_trending_adds": None,
     "injury_opportunity": False, "injury_opportunity_ahead_player": None, "injury_opportunity_ahead_status": None,
+    "weeks_flagged_out": None,
     "team_new_head_coach": False, "team_head_coach_name": None, "team_new_offensive_coordinator": False,
     "team_offensive_coordinator_name": None, "qb_year2_regression_caution": False, "qb_year1_ppg": None,
     "percent_owned": None, "percent_owned_delta": None,
@@ -511,6 +512,7 @@ def build_mock_players_df() -> pd.DataFrame:
         player.setdefault("injury_opportunity", False)
         player.setdefault("injury_opportunity_ahead_player", None)
         player.setdefault("injury_opportunity_ahead_status", None)
+        player.setdefault("weeks_flagged_out", None)
         player.setdefault("team_new_head_coach", False)
         player.setdefault("team_head_coach_name", None)
         player.setdefault("team_new_offensive_coordinator", False)
@@ -613,6 +615,7 @@ def build_mock_players_df() -> pd.DataFrame:
         "injury_opportunity": True,
         "injury_opportunity_ahead_player": "Wounded Wes",
         "injury_opportunity_ahead_status": "O",
+        "weeks_flagged_out": None,
         "team_new_head_coach": False,
         "team_head_coach_name": None,
         "team_new_offensive_coordinator": False,
@@ -663,6 +666,7 @@ def build_mock_players_df() -> pd.DataFrame:
         "injury_opportunity": False,
         "injury_opportunity_ahead_player": None,
         "injury_opportunity_ahead_status": None,
+        "weeks_flagged_out": None,
         "team_new_head_coach": False,
         "team_head_coach_name": None,
         "team_new_offensive_coordinator": False,
@@ -1161,10 +1165,11 @@ def render_run_game_outlook() -> None:
     workload_table = filtered_workload[[
         "player_name", "team", "carries", "targets", "receptions", "receiving_yards",
         "touches", "carry_share", "touch_share", "snap_share", "bell_cow_score", "usage_tier",
+        "weeks_flagged_out",
     ]].rename(columns={
         "player_name": "player", "receiving_yards": "rec yards", "carry_share": "carry share",
         "touch_share": "touch share", "snap_share": "snap share", "bell_cow_score": "bell cow score",
-        "usage_tier": "usage tier",
+        "usage_tier": "usage tier", "weeks_flagged_out": "weeks out (injury)",
     })
     st.dataframe(
         _style_table(workload_table, highlight_col="bell cow score"),
@@ -1175,7 +1180,10 @@ def render_run_game_outlook() -> None:
         "\"Share\" columns are that RB's percentage of their OWN team's RB-room carries/touches/"
         "snaps -- not a league-wide ranking. A RB with modest raw touches but a high share is still "
         "a real bell cow on a run-light offense; see the Team Run Game Outlook table above for that "
-        "team's overall volume."
+        "team's overall volume. \"Weeks out (injury)\" is how many weeks they were listed Out on the "
+        "real NFL injury report -- a real caveat for the shares above: a back who missed real time "
+        "shows a season-total workload that UNDERSTATES what they command when actually healthy, so "
+        "a low bell cow score paired with real weeks out can mean \"was hurt,\" not \"is a committee back.\""
     )
 
 
@@ -1342,9 +1350,12 @@ def render_free_agent_suggestions(players_df: pd.DataFrame, use_live: bool, cred
         "Compares your weakest rostered player at each position against the best available free "
         "agent, using the same blended `priority_score` as Priority Board -- a concrete \"drop X, "
         "add Y\" suggestion, not just free agents ranked in a vacuum with no connection to your "
-        "actual roster. Needs every team's real Yahoo rosters to know what \"your weakest player\" "
-        "actually is; falls back to a mock league until that's live. See `find_free_agent_upgrades()` "
-        "in `data/calculators.py`."
+        "actual roster. Never recommends adding someone currently on IR/PUP/NA/suspended (they "
+        "structurally can't help you right now); a merely Questionable/Doubtful/Out player is still "
+        "eligible but shown with their real status so you know the single-game risk you're taking. "
+        "Needs every team's real Yahoo rosters to know what \"your weakest player\" actually is; "
+        "falls back to a mock league until that's live. See `find_free_agent_upgrades()` in "
+        "`data/calculators.py`."
     )
 
     league_rosters, my_team_id = _load_league_rosters(use_live, credentials)
@@ -1371,7 +1382,8 @@ def render_free_agent_suggestions(players_df: pd.DataFrame, use_live: bool, cred
 
     display = suggestions.rename(columns={
         "position": "pos", "drop_player": "drop", "drop_priority_score": "drop score",
-        "add_player": "add", "add_priority_score": "add score", "priority_score_gain": "gain",
+        "drop_status": "drop status", "add_player": "add", "add_priority_score": "add score",
+        "add_status": "add status", "priority_score_gain": "gain",
     })
     st.dataframe(_style_table(display, highlight_col="gain"), use_container_width=True, hide_index=True)
 
@@ -1389,7 +1401,9 @@ def render_trade_finder(use_live: bool, credentials: Optional[dict]) -> None:
         "and you have a need -- not just \"who has a good player.\" This is a value-and-need "
         "heuristic, not a negotiation: it has no idea whether a manager actually wants to trade, "
         "their own roster philosophy, or plain stubbornness. Treat every row as a conversation "
-        "starter to evaluate yourself, never a trade either side is guaranteed to accept."
+        "starter to evaluate yourself, never a trade either side is guaranteed to accept. Neither "
+        "side of a proposed trade is ever someone currently on IR/PUP/NA/suspended; a "
+        "Questionable/Doubtful/Out status is still shown as real single-game risk context."
     )
 
     league_rosters, my_team_id = _load_league_rosters(use_live, credentials)
@@ -1413,8 +1427,9 @@ def render_trade_finder(use_live: bool, credentials: Optional[dict]) -> None:
 
     display = trades.rename(columns={
         "other_team_id": "team", "you_give": "you give", "you_give_position": "give pos",
-        "you_give_value": "give value", "you_get": "you get", "you_get_position": "get pos",
-        "you_get_value": "get value", "fairness_gap_pct": "fairness gap", "fit_score": "fit",
+        "you_give_value": "give value", "you_give_status": "give status", "you_get": "you get",
+        "you_get_position": "get pos", "you_get_value": "get value", "you_get_status": "get status",
+        "fairness_gap_pct": "fairness gap", "fit_score": "fit",
     })
     st.dataframe(_style_table(display, highlight_col="fit"), use_container_width=True, hide_index=True)
 

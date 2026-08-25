@@ -399,6 +399,25 @@ def build_injury_opportunity_lookup(season: int, week: Optional[int] = None) -> 
     return lookup
 
 
+def build_season_injury_durability_lookup(season: int) -> Dict[str, int]:
+    """Per `gsis_id`, how many DISTINCT weeks this season the player was
+    listed "Out" on the NFL's official injury report -- a real durability-
+    HISTORY signal, not a live "are they injured right now" one (there's no
+    such thing once a season's over). This is the only injury-related
+    signal available to Yahoo-independent tools (Draft Board/Run Game
+    Outlook) -- they have no live Yahoo `status` field to draw on the way
+    every other tab does, so a player's real in-season injury report is the
+    next best thing for flagging a fragile profile.
+
+    Deliberately counts only "Out" (not Questionable/Doubtful) -- those
+    lighter tags usually still mean the player suited up, so counting them
+    would overstate how often someone actually missed a game.
+    """
+    injuries = load_injuries(season)
+    out_weeks = injuries[injuries["report_status"] == "Out"]
+    return out_weeks.groupby("gsis_id")["week"].nunique().to_dict()
+
+
 @lru_cache(maxsize=8)
 def load_schedules(season: int) -> pd.DataFrame:
     import nfl_data_py as nfl
@@ -687,6 +706,7 @@ def build_enrichment_lookup(
     deep_share_by_gsis = load_deep_target_share_by_gsis(season)
     red_zone_share_by_gsis = load_red_zone_share_by_gsis(season)
     injury_opportunity_by_gsis = build_injury_opportunity_lookup(season, injury_week)
+    injury_durability_by_gsis = build_season_injury_durability_lookup(season)
     coaching_change_by_team = build_coaching_change_lookup(season, coordinator_csv_path)
     qb_year2_flags_by_gsis = build_qb_year2_regression_flags(season)
     te_snap_share_by_gsis = build_te_snap_share_lookup(season)
@@ -749,6 +769,7 @@ def build_enrichment_lookup(
             "injury_opportunity": injury_opp.get("injury_opportunity", False),
             "injury_opportunity_ahead_player": injury_opp.get("injury_opportunity_ahead_player"),
             "injury_opportunity_ahead_status": injury_opp.get("injury_opportunity_ahead_status"),
+            "weeks_flagged_out": injury_durability_by_gsis.get(gsis_id),
             "team_new_head_coach": coaching_change.get("new_head_coach", False),
             "team_head_coach_name": coaching_change.get("head_coach_name"),
             "team_new_offensive_coordinator": coaching_change.get("new_offensive_coordinator", False),
@@ -769,7 +790,7 @@ ENRICHMENT_FIELDS = (
     "ngs_separation", "ngs_yac_above_expectation", "ngs_time_to_throw", "ngs_cpoe",
     "game_wind_mph", "game_precip_probability", "game_is_dome",
     "projected_points_by_week", "injury_opportunity", "injury_opportunity_ahead_player",
-    "injury_opportunity_ahead_status", "team_new_head_coach", "team_head_coach_name",
+    "injury_opportunity_ahead_status", "weeks_flagged_out", "team_new_head_coach", "team_head_coach_name",
     "team_new_offensive_coordinator", "team_offensive_coordinator_name",
     "qb_year2_regression_caution", "qb_year1_ppg",
 )

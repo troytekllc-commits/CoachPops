@@ -48,6 +48,13 @@ Known gaps
   this project's snap-based signals) only goes back a handful of
   seasons; teams/players missing from it fall back to carry/touch share
   alone (a `bell_cow_score` from fewer inputs, not a penalized one).
+- `weeks_flagged_out` (real weeks listed "Out" on the season's injury
+  report) is real durability HISTORY, not a live "are they hurt right
+  now" signal -- there's no such thing for a completed season. It exists
+  specifically to catch the case a raw workload share can't: a back who
+  missed real time shows a season-total share that understates their
+  true role when healthy, so a low `bell_cow_score` paired with real
+  weeks out means "was hurt," not "is a committee back."
 """
 
 from __future__ import annotations
@@ -59,6 +66,7 @@ import pandas as pd
 from api.nfl_enrichment import (
     _normalize_team_abbr,
     build_coaching_change_lookup,
+    build_season_injury_durability_lookup,
     load_pbp,
     load_seasonal_rosters,
     load_snap_counts,
@@ -77,6 +85,10 @@ COMMITTEE_LEAD_THRESHOLD = 0.30
 # workload report at all -- cuts deep-bench/practice-squad noise without
 # hiding anyone who had a real role for even part of a season.
 MIN_TOUCHES_FOR_REPORT = 20
+
+# weeks_flagged_out at/above this on a retained lead back raises a
+# durability caution in the team outlook's context notes.
+LEAD_BACK_DURABILITY_CAUTION_WEEKS = 3
 
 
 def compute_team_run_rate(season: int) -> pd.DataFrame:
@@ -184,6 +196,17 @@ def compute_rb_workload(season: int) -> pd.DataFrame:
     snap_share = _rb_snap_share_lookup(season)
     totals["snap_share"] = totals["player_id"].map(snap_share)
 
+    # Durability history -- weeks flagged "Out" on the real injury report
+    # this season (see api/nfl_enrichment.py's build_season_injury_durability_lookup()).
+    # A real caveat this raises for reading the shares above: a back who
+    # missed real time shows a season-total workload (and therefore a
+    # carry/touch/snap share) that UNDERSTATES what they command when
+    # actually healthy -- a low bell_cow_score here can mean "committee
+    # back" or "was the clear lead back but missed 6 weeks," and this
+    # column is what tells those two apart.
+    weeks_out = build_season_injury_durability_lookup(season)
+    totals["weeks_flagged_out"] = totals["player_id"].map(weeks_out).fillna(0).astype(int)
+
     totals["bell_cow_score"] = totals[["carry_share", "touch_share", "snap_share"]].mean(axis=1, skipna=True)
     return totals.drop(columns=["team_rb_carries", "team_rb_touches"])
 
@@ -216,7 +239,7 @@ def _team_lead_back(workload: pd.DataFrame) -> pd.DataFrame:
     if workload.empty:
         return workload
     idx = workload.groupby("team")["touches"].idxmax()
-    return workload.loc[idx, ["team", "player_id", "player_name", "bell_cow_score"]]
+    return workload.loc[idx, ["team", "player_id", "player_name", "bell_cow_score", "weeks_flagged_out"]]
 
 
 def _run_outlook_notes(row: pd.Series) -> str:
@@ -233,7 +256,11 @@ def _run_outlook_notes(row: pd.Series) -> str:
         notes.append("new offensive coordinator")
 
     if row.get("workhorse_status") == "retained":
-        notes.append(f"last season's lead back ({row.get('lead_back_name')}) is still on the roster")
+        note = f"last season's lead back ({row.get('lead_back_name')}) is still on the roster"
+        weeks_out = row.get("lead_back_weeks_out")
+        if weeks_out is not None and pd.notna(weeks_out) and weeks_out >= LEAD_BACK_DURABILITY_CAUTION_WEEKS:
+            note += f", but missed {int(weeks_out)} week(s) with injury last season (durability risk)"
+        notes.append(note)
     elif row.get("workhorse_status") == "departed":
         arrivals = row.get("notable_arrivals")
         if arrivals:
@@ -281,11 +308,15 @@ def build_run_game_outlook(season: int) -> pd.DataFrame:
     movers_by_team = movers[movers["position"] == RB_POSITION].groupby("team_new")["player_name"].apply(list)
 
     def _workhorse_signal(team: str) -> pd.Series:
+        empty = {
+            "workhorse_status": "no_clear_lead_back", "lead_back_name": None,
+            "notable_arrivals": None, "lead_back_weeks_out": None,
+        }
         if team not in lead_backs.index:
-            return pd.Series({"workhorse_status": "no_clear_lead_back", "lead_back_name": None, "notable_arrivals": None})
+            return pd.Series(empty)
         lead = lead_backs.loc[team]
         if lead["bell_cow_score"] < COMMITTEE_LEAD_THRESHOLD:
-            return pd.Series({"workhorse_status": "no_clear_lead_back", "lead_back_name": None, "notable_arrivals": None})
+            return pd.Series(empty)
         current_team = current_teams_by_player.get(lead["player_id"])
         retained = current_team == team
         arrivals = movers_by_team.get(team)
@@ -293,6 +324,7 @@ def build_run_game_outlook(season: int) -> pd.DataFrame:
             "workhorse_status": "retained" if retained else "departed",
             "lead_back_name": lead["player_name"],
             "notable_arrivals": ", ".join(arrivals) if arrivals else None,
+            "lead_back_weeks_out": lead["weeks_flagged_out"],
         })
 
     workhorse = df["team"].apply(_workhorse_signal)
