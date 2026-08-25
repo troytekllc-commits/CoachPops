@@ -776,8 +776,8 @@ def _style_table(df: pd.DataFrame, highlight_col: Optional[str] = None, higher_i
     return styler
 
 
-def render_rookie_radar(players_df: pd.DataFrame) -> None:
-    st.subheader("Rookie RBs & WRs, Ranked by Bumped Back-Half Upside")
+def _render_rookie_radar_section(players_df: pd.DataFrame) -> None:
+    st.markdown("#### Rookie RBs & WRs, Ranked by Bumped Back-Half Upside")
     st.caption(
         "Back-half-of-season projections bumped by NFL draft capital -- Day 1/2 picks "
         "get the biggest boost. High-variance bench stashes worth rostering now."
@@ -808,8 +808,8 @@ def render_rookie_radar(players_df: pd.DataFrame) -> None:
     )
 
 
-def render_qb_konami_code(players_df: pd.DataFrame) -> None:
-    st.subheader("QB Konami Code: Passing Points vs. Rushing Floor")
+def _render_qb_konami_section(players_df: pd.DataFrame) -> None:
+    st.markdown("#### QB Konami Code: Passing Points vs. Rushing Floor")
     st.caption(
         "Dual-threat QBs sit up and to the right -- their weekly floor doesn't collapse "
         "on a bad passing day the way a pure pocket passer's does. CPOE (completion % over "
@@ -853,8 +853,8 @@ def render_qb_konami_code(players_df: pd.DataFrame) -> None:
     )
 
 
-def render_ir_stash_targets(players_df: pd.DataFrame) -> None:
-    st.subheader("IR Stash Targets")
+def _render_ir_stash_section(players_df: pd.DataFrame) -> None:
+    st.markdown("#### IR Stash Targets")
     st.caption(
         "Currently out (O / IR / PUP) but projected for a strong back half once healthy -- "
         "worth one of this league's 2 IR slots."
@@ -873,8 +873,8 @@ def render_ir_stash_targets(players_df: pd.DataFrame) -> None:
     )
 
 
-def render_wr3_floor_finder(players_df: pd.DataFrame) -> None:
-    st.subheader("WR3 Floor Finder")
+def _render_wr3_floor_finder_section(players_df: pd.DataFrame) -> None:
+    st.markdown("#### WR3 Floor Finder")
     st.caption(
         "Receivers with enough target volume to trust, ranked down for over-reliance on "
         "low-probability deep-ball touchdowns."
@@ -893,8 +893,8 @@ def render_wr3_floor_finder(players_df: pd.DataFrame) -> None:
     )
 
 
-def render_breakout_radar(players_df: pd.DataFrame) -> None:
-    st.subheader("Breakout Radar")
+def _render_breakout_radar_section(players_df: pd.DataFrame) -> None:
+    st.markdown("#### Breakout Radar")
     st.caption(
         "Scans for the same predictive patterns behind last season's hardest-to-see-coming "
         "performers: an injury-opened opportunity, a new offensive play-caller, target share "
@@ -919,8 +919,8 @@ def render_breakout_radar(players_df: pd.DataFrame) -> None:
     st.dataframe(_style_table(display, highlight_col="breakout_score"), use_container_width=True, hide_index=True)
 
 
-def render_te_difference_makers(players_df: pd.DataFrame) -> None:
-    st.subheader("TE Difference-Maker Finder")
+def _render_te_difference_makers_section(players_df: pd.DataFrame) -> None:
+    st.markdown("#### TE Difference-Maker Finder")
     st.caption(
         "TE is unusually top-heavy -- a handful of must-start options, then a canyon, then "
         "touchdown-dependent streamers. Ranks TEs by the signals that predict a jump into that "
@@ -946,14 +946,41 @@ def render_te_difference_makers(players_df: pd.DataFrame) -> None:
     st.dataframe(_style_table(display, highlight_col="score"), use_container_width=True, hide_index=True)
 
 
-def render_oline_rankings() -> None:
-    """Team-level O-Line Power Rankings. Unlike every other tab, this one
-    needs no Yahoo data at all -- pure nfl_data_py -- so it works the same
-    whether the sidebar is set to mock or live Yahoo data."""
-    from api.nfl_enrichment import default_stats_season
+_POSITION_DEEP_DIVES = {
+    "Rookie Radar": _render_rookie_radar_section,
+    "QB Konami Code": _render_qb_konami_section,
+    "WR3 Floor Finder": _render_wr3_floor_finder_section,
+    "TE Difference-Makers": _render_te_difference_makers_section,
+    "Breakout Radar": _render_breakout_radar_section,
+}
+
+
+def render_position_deep_dives(players_df: pd.DataFrame) -> None:
+    """Five real, position/pattern-specific "find hidden value" finders,
+    all built from the same players_df pool, in one tab with a lens
+    selector instead of five separate tab-bar entries -- Rookie Radar,
+    QB Konami Code, WR3 Floor Finder, TE Difference-Makers, and Breakout
+    Radar. Only the chosen lens renders, so switching is a single click,
+    not a scroll through everything at once."""
+    st.subheader("Position Deep Dives")
+    st.caption(
+        "Five real, position/pattern-specific finders over the current player pool -- pick a "
+        "lens below. Each still has its own full methodology; see that lens's own caption for "
+        "the details."
+    )
+    choice = st.selectbox("Deep dive", list(_POSITION_DEEP_DIVES.keys()), key="position_deep_dive_choice")
+    st.divider()
+    _POSITION_DEEP_DIVES[choice](players_df)
+
+
+def _render_oline_section(season: int) -> None:
+    """Team-level O-Line Power Rankings. Unlike every other section in
+    this tab-group, this one needs no Yahoo data at all -- pure
+    nfl_data_py -- so it works the same whether the sidebar is set to
+    mock or live Yahoo data."""
     from api.oline_analytics import build_oline_rankings_with_trend
 
-    st.subheader("O-Line Power Rankings")
+    st.markdown("#### O-Line Power Rankings")
     st.caption(
         "Team-level, built entirely from nfl_data_py -- no Yahoo access needed. Combines pass "
         "protection (sack/QB-hit rate per dropback), run blocking (yards per carry, stuff rate), "
@@ -962,10 +989,6 @@ def render_oline_rankings() -> None:
         "turnover, and coaching-change flags. There's no true PFF-style per-lineman grading "
         "available for free, so treat the score as directional -- see `api/oline_analytics.py` for "
         "the full methodology and its limits."
-    )
-
-    season = st.number_input(
-        "Season", min_value=2015, max_value=2035, value=default_stats_season(), step=1, key="oline_season"
     )
 
     @st.cache_data(ttl=3600, show_spinner="Crunching play-by-play, snap counts, and draft data...")
@@ -1035,15 +1058,14 @@ def render_oline_rankings() -> None:
         st.caption(f"Biggest rank movers vs. last season: {mover_text}")
 
 
-def render_coaching_changes() -> None:
+def _render_coaching_section(season: int) -> None:
     """Every team with a real, current new head coach and/or offensive
     coordinator, plus what that might mean for the team's play style --
     see `api/coaching_analytics.py` for the full methodology and its
     real, disclosed limits."""
     from api.coaching_analytics import build_coaching_scheme_report
-    from api.nfl_enrichment import default_stats_season
 
-    st.subheader("Coaching Changes & Scheme Outlook")
+    st.markdown("#### Coaching Changes & Scheme Outlook")
     st.caption(
         "Every team with a real, current new head coach and/or offensive coordinator this "
         "season, alongside that team's own real pass rate/O-line strength last season (the "
@@ -1052,11 +1074,6 @@ def render_coaching_changes() -> None:
         "are shown too, as a real signal for the incoming scheme. Coordinator-only hires and "
         "first-time/promoted-internally head coaches have no such trail (a real, disclosed gap, "
         "not an oversight) -- see `api/coaching_analytics.py`."
-    )
-
-    season = st.number_input(
-        "Season (last completed season's tendencies)", min_value=2016, max_value=2035,
-        value=default_stats_season(), step=1, key="coaching_changes_season",
     )
 
     @st.cache_data(ttl=3600, show_spinner="Cross-referencing coaching changes with real team tendencies...")
@@ -1104,26 +1121,23 @@ def render_coaching_changes() -> None:
     )
 
 
-def render_team_change_report() -> None:
+def _render_team_change_section(season: int) -> None:
     """Skill-position players who changed teams, with old-vs-new team
     context. Like O-Line Power Rankings, this is pure nfl_data_py -- no
     Yahoo data needed."""
-    from api.nfl_enrichment import default_stats_season
     from api.team_change_analytics import build_team_change_report
 
-    st.subheader("Team Change Impact")
+    st.markdown("#### Team Change Impact")
     st.caption(
         "Every QB/RB/WR/TE who changed teams since last season, with the context that actually "
         "determines whether it helps or hurts: team pass rate/efficiency, O-Line strength "
-        "(reusing the O-Line Power Rankings tab), how crowded the new team's WR/TE target "
-        "competition already is, and coaching changes. No single \"value went up/down\" score -- "
-        "how much a move helps is genuinely position-dependent, so read the context notes for "
-        "each player. See `api/team_change_analytics.py` for the full methodology and its limits."
+        "(reusing the O-Line Power Rankings section above), how crowded the new team's WR/TE "
+        "target competition already is, and coaching changes. No single \"value went up/down\" "
+        "score -- how much a move helps is genuinely position-dependent, so read the context "
+        "notes for each player. See `api/team_change_analytics.py` for the full methodology and "
+        "its limits."
     )
 
-    season = st.number_input(
-        "Season", min_value=2016, max_value=2035, value=default_stats_season(), step=1, key="team_change_season"
-    )
     position_filter = st.multiselect(
         "Position", options=["QB", "RB", "WR", "TE"], default=["QB", "RB", "WR", "TE"], key="team_change_position"
     )
@@ -1180,28 +1194,23 @@ def render_team_change_report() -> None:
     )
 
 
-def render_run_game_outlook() -> None:
+def _render_run_game_section(season: int) -> None:
     """Team-level run-game outlook (which offenses look built to run the
     ball, and why) plus RB workload/"bell cow" identification. Like
     O-Line Power Rankings/Team Change Impact, this is pure nfl_data_py --
     no Yahoo data needed."""
-    from api.nfl_enrichment import default_stats_season
     from api.run_game_analytics import build_rb_workload_report, build_run_game_outlook
 
-    st.subheader("Run Game Outlook")
+    st.markdown("#### Run Game Outlook")
     st.caption(
         "**Team outlook**: last season's real rush rate/efficiency, adjusted by O-line strength "
-        "(reusing O-Line Power Rankings), coaching stability, and whether last season's lead back "
-        "is still on the roster -- into one 0-100 `run_outlook_score`, same real-signals-blend "
-        "approach as O-Line Power Rankings/Priority Board. Not a synthetic season simulation -- "
-        "see `api/run_game_analytics.py` for the full methodology. **RB workload**: every RB's "
-        "real carries/targets/receptions/touches, plus their *share* of their own team's RB-room "
-        "usage (carry/touch/snap share) -- that share is what actually separates a bell cow from a "
-        "committee back getting decent raw volume on a pass-heavy offense."
-    )
-
-    season = st.number_input(
-        "Season", min_value=2016, max_value=2035, value=default_stats_season(), step=1, key="run_game_season"
+        "(reusing O-Line Power Rankings above), coaching stability, and whether last season's "
+        "lead back is still on the roster -- into one 0-100 `run_outlook_score`, same real-"
+        "signals-blend approach as O-Line Power Rankings/Priority Board. Not a synthetic season "
+        "simulation -- see `api/run_game_analytics.py` for the full methodology. **RB workload**: "
+        "every RB's real carries/targets/receptions/touches, plus their *share* of their own "
+        "team's RB-room usage (carry/touch/snap share) -- that share is what actually separates "
+        "a bell cow from a committee back getting decent raw volume on a pass-heavy offense."
     )
 
     @st.cache_data(ttl=3600, show_spinner="Crunching play-by-play, snap counts, and roster data...")
@@ -1283,16 +1292,50 @@ def render_run_game_outlook() -> None:
     )
 
 
-def render_next_man_up() -> None:
+def render_team_outlook() -> None:
+    """Every real, current team-level signal in one place: O-Line Power
+    Rankings, Coaching Changes & Scheme Outlook, Team Change Impact, and
+    Run Game Outlook. All four are pure `nfl_data_py` (no Yahoo access
+    needed) and all four already get folded into Priority Board as
+    context in summarized form -- this tab is where their full detail
+    lives. One shared season selector drives every section below."""
+    from api.nfl_enrichment import default_stats_season
+
+    st.subheader("Team Outlook")
+    st.caption(
+        "Every real, current team-level signal this app computes, grouped in one place: O-Line "
+        "strength, coaching changes and what they might mean for scheme, which players changed "
+        "teams and how that context cuts for them, and each team's run-game outlook. All four are "
+        "pure `nfl_data_py` -- zero Yahoo access needed -- and all four already feed Priority "
+        "Board as summarized context; this is where the full detail behind that context lives."
+    )
+
+    season = st.number_input(
+        "Season (last completed season's stats)", min_value=2016, max_value=2035,
+        value=default_stats_season(), step=1, key="team_outlook_season",
+    )
+
+    _render_oline_section(int(season))
+    st.divider()
+    _render_coaching_section(int(season))
+    st.divider()
+    _render_team_change_section(int(season))
+    st.divider()
+    _render_run_game_section(int(season))
+
+
+def _render_next_man_up_section() -> None:
     """Real, current "next man up" opportunities: for each team's
     top-usage RB/WR carrying a real, CURRENT injury designation
     (Sleeper), who the primary backup is and how much they stand to
     inherit -- see `api/handcuff_analytics.py` for the full methodology
-    and its real, disclosed limits."""
+    and its real, disclosed limits. Self-contained (pure nfl_data_py +
+    Sleeper, its own season selector) -- unlike IR Stash Targets, it
+    doesn't depend on the sidebar's players_df."""
     from api.handcuff_analytics import find_next_man_up
     from api.nfl_enrichment import default_stats_season
 
-    st.subheader("Next Man Up")
+    st.markdown("#### Next Man Up")
     st.caption(
         "For each team's real, top-usage RB/WR who's carrying a real, CURRENT injury "
         "designation (Sleeper's live status -- Questionable/Doubtful/Out/IR/PUP), the "
@@ -1351,6 +1394,23 @@ def render_next_man_up() -> None:
         use_container_width=True,
         hide_index=True,
     )
+
+
+def render_injury_opportunity(players_df: pd.DataFrame) -> None:
+    """Both real injury-driven opportunity questions in one place: who's
+    already hurt with strong back-half upside (IR Stash Targets), and
+    who benefits if a TEAMMATE gets hurt (Next Man Up) -- opposite ends
+    of the same "injury opportunity" idea, so a user thinking about IR/
+    handcuff strategy sees both side by side."""
+    st.subheader("Injury Opportunity")
+    st.caption(
+        "Two real injury-driven opportunity questions: who's already hurt with strong back-half "
+        "upside worth an IR slot, and who stands to inherit real volume if a teammate's real, "
+        "current injury turns into missed time."
+    )
+    _render_ir_stash_section(players_df)
+    st.divider()
+    _render_next_man_up_section()
 
 
 def render_priority_board(players_df: pd.DataFrame) -> None:
@@ -2041,23 +2101,12 @@ def main() -> None:
             st.error(f"Couldn't build the real player pool ({exc}). Falling back to mock data for now.", icon="🚫")
             players_df = build_mock_players_df()
 
-    (
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11,
-        tab12, tab13, tab14, tab15, tab16,
-    ) = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
         [
             "Priority Board",
-            "Rookie Radar",
-            "QB Konami Code",
-            "IR Stash Targets",
-            "WR3 Floor Finder",
-            "Breakout Radar",
-            "TE Difference-Makers",
-            "O-Line Power Rankings",
-            "Coaching Changes",
-            "Team Change Impact",
-            "Run Game Outlook",
-            "Next Man Up",
+            "Position Deep Dives",
+            "Injury Opportunity",
+            "Team Outlook",
             "Free Agent Suggestions",
             "Trade Finder",
             "Draft Board",
@@ -2067,28 +2116,12 @@ def main() -> None:
     with tab1:
         render_priority_board(players_df)
     with tab2:
-        render_rookie_radar(players_df)
+        render_position_deep_dives(players_df)
     with tab3:
-        render_qb_konami_code(players_df)
+        render_injury_opportunity(players_df)
     with tab4:
-        render_ir_stash_targets(players_df)
+        render_team_outlook()
     with tab5:
-        render_wr3_floor_finder(players_df)
-    with tab6:
-        render_breakout_radar(players_df)
-    with tab7:
-        render_te_difference_makers(players_df)
-    with tab8:
-        render_oline_rankings()
-    with tab9:
-        render_coaching_changes()
-    with tab10:
-        render_team_change_report()
-    with tab11:
-        render_run_game_outlook()
-    with tab12:
-        render_next_man_up()
-    with tab13:
         # Deliberately NOT `players_df` when that's the real Yahoo-free pool:
         # Free Agent Suggestions needs a real MULTI-TEAM roster to mean
         # anything (whose roster is "my weakest player" relative to), which
@@ -2098,11 +2131,11 @@ def main() -> None:
         # isn't live.
         free_agent_pool = players_df if data_source == "Live Yahoo data" else build_mock_players_df()
         render_free_agent_suggestions(free_agent_pool, use_live=(data_source == "Live Yahoo data"), credentials=credentials)
-    with tab14:
+    with tab6:
         render_trade_finder(use_live=(data_source == "Live Yahoo data"), credentials=credentials)
-    with tab15:
+    with tab7:
         render_draft_board()
-    with tab16:
+    with tab8:
         render_qb_value_finder()
 
 

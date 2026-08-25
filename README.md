@@ -96,25 +96,28 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
   below): ranks QBs by real league-scoring value, then compares that
   rank against real market cost (Yahoo ADP/FantasyPros) to flag value.
 - `ui/` — Streamlit dashboard
-  - `dashboard.py` — 16-tab dashboard. **Priority Board** (see below) is
-    first (its table includes each player's raw league-scoring value --
-    the former standalone "League Optimizer" tab was folded in here since
-    it was just that same number, unblended; see below); then Rookie
-    Radar, QB Konami Code, IR Stash Targets, WR3 Floor Finder, Breakout
-    Radar, **TE Difference-Makers**,
-    **O-Line Power Rankings**, **Coaching Changes & Scheme Outlook** (see
-    below), **Team Change Impact**, **Run Game Outlook**
-    (see below), **Next Man Up** (see below), **Free Agent Suggestions**,
-    **Trade Finder** (see "Free Agent Suggestions & Trade Finder" below),
-    **Draft Board** (see below), and **QB Value Finder** (see below). A
-    sidebar toggle switches between two "Waiver wire data"
+  - `dashboard.py` — 8-tab dashboard, deliberately grouped so related
+    signals sit next to each other rather than each getting its own
+    tab-bar entry (see "Tab consolidation" below for the reasoning):
+    **Priority Board** (see below; its table includes each player's raw
+    league-scoring value -- the former standalone "League Optimizer" tab
+    was folded in here since it was just that same number, unblended);
+    **Position Deep Dives** (Rookie Radar, QB Konami Code, WR3 Floor
+    Finder, TE Difference-Makers, Breakout Radar -- one lens selector,
+    five real finders); **Injury Opportunity** (IR Stash Targets + Next
+    Man Up, see below); **Team Outlook** (O-Line Power Rankings,
+    Coaching Changes & Scheme Outlook, Team Change Impact, Run Game
+    Outlook, see below -- one shared season selector); **Free Agent
+    Suggestions**; **Trade Finder** (see "Free Agent Suggestions & Trade
+    Finder" below); **Draft Board** (see below); and **QB Value Finder**
+    (see below, kept standalone rather than folded into Draft Board so
+    a "don't draft a QB early" strategy has one dedicated, easy-to-find
+    place). A sidebar toggle switches between two "Waiver wire data"
     sources — **Real data (no Yahoo)** (see below, the default) and
-    **Live Yahoo data**; O-Line Power Rankings/Coaching Changes/Team
-    Change Impact/**Run Game Outlook**/**Next Man Up**/**Draft
-    Board**/**QB Value Finder** (plus Priority Board's O-Line/Team
-    Change context) work with zero Yahoo access regardless — pure
-    `nfl_data_py` (+ Sleeper for Next Man Up's live injury status). Every
-    tab's
+    **Live Yahoo data**; Team Outlook's four sections/**Draft Board**/
+    **QB Value Finder** (plus Priority Board's own O-Line/Team Change
+    context) work with zero Yahoo access regardless — pure `nfl_data_py`
+    (+ Sleeper for Next Man Up's live injury status). Every tab's
     table is styled via `_style_table()` to match the blue theme
     (`.streamlit/config.toml`): light zebra-striped row banding plus a
     blue-intensity gradient (darker = better) on that tab's key ranking
@@ -122,6 +125,34 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
     pulling in matplotlib.
   - `api/run_game_analytics.py` — **Run Game Outlook**'s calculators (see
     below).
+
+### Tab consolidation
+
+16 tabs (after adding Coaching Changes, Next Man Up, and QB Value
+Finder) got hard to navigate, so they're regrouped into 8 by what they
+actually share, not just similar names:
+
+- **Team Outlook** = O-Line Power Rankings + Coaching Changes & Scheme
+  Outlook + Team Change Impact + Run Game Outlook. All four are pure
+  `nfl_data_py`, all team-level (not player-level), and all four already
+  get summarized as *context* inside Priority Board -- this tab is where
+  their full detail lives, one shared season selector driving all four
+  sections.
+- **Injury Opportunity** = IR Stash Targets + Next Man Up. Same real
+  question from opposite ends: who's already hurt with real back-half
+  upside, vs. who benefits if a teammate gets hurt.
+- **Position Deep Dives** = Rookie Radar + QB Konami Code + WR3 Floor
+  Finder + TE Difference-Makers + Breakout Radar. All five just run a
+  different calculator over the same player pool to find under-the-
+  radar value by position/pattern -- a single selector swaps between
+  them instead of five separate tab-bar entries.
+- **QB Value Finder** stayed standalone rather than folding into Draft
+  Board -- it exists specifically so a "wait on QB" draft strategy has
+  one dedicated, obviously-labeled place, not a filter buried inside a
+  bigger board.
+
+Nothing was deleted in this regrouping -- every calculator, column, and
+caption from the original 16 tabs is still there, just reorganized.
 
 ### Injury data across the app
 
