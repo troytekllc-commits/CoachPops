@@ -258,7 +258,24 @@ def build_players_dataframe(
     if enrich and not df.empty:
         from api.nfl_enrichment import default_stats_season, enrich_players_dataframe
 
-        df = enrich_players_dataframe(df, season or default_stats_season(), through_week)
+        enrichment_season = season or default_stats_season()
+        try:
+            df = enrich_players_dataframe(df, enrichment_season, through_week)
+        except Exception as exc:
+            # The season docstring above already warns against passing a
+            # season with nothing played yet, but the sidebar's "NFL
+            # season" widget lets a user do exactly that (e.g. 2026 before
+            # Week 1) -- same real, live-confirmed gap as every other
+            # season-selecting tab in this app (see ui/dashboard.py's
+            # render_oline_rankings()/render_team_change_report()). Falls
+            # back one year rather than losing the real live Yahoo waiver
+            # wire data entirely over a bad enrichment-season pick.
+            fallback_season = enrichment_season - 1
+            logger.warning(
+                "Couldn't enrich with %s season data (%s) -- nflverse likely hasn't published real "
+                "game stats for that season yet. Falling back to %s.", enrichment_season, exc, fallback_season,
+            )
+            df = enrich_players_dataframe(df, fallback_season, through_week)
 
     if include_sleeper_trending and not df.empty:
         try:
@@ -332,7 +349,24 @@ def build_league_rosters_dataframe(
     if enrich and not df.empty:
         from api.nfl_enrichment import default_stats_season, enrich_players_dataframe
 
-        df = enrich_players_dataframe(df, season or default_stats_season(), through_week)
+        enrichment_season = season or default_stats_season()
+        try:
+            df = enrich_players_dataframe(df, enrichment_season, through_week)
+        except Exception as exc:
+            # The season docstring above already warns against passing a
+            # season with nothing played yet, but the sidebar's "NFL
+            # season" widget lets a user do exactly that (e.g. 2026 before
+            # Week 1) -- same real, live-confirmed gap as every other
+            # season-selecting tab in this app (see ui/dashboard.py's
+            # render_oline_rankings()/render_team_change_report()). Falls
+            # back one year rather than losing the real live Yahoo waiver
+            # wire data entirely over a bad enrichment-season pick.
+            fallback_season = enrichment_season - 1
+            logger.warning(
+                "Couldn't enrich with %s season data (%s) -- nflverse likely hasn't published real "
+                "game stats for that season yet. Falling back to %s.", enrichment_season, exc, fallback_season,
+            )
+            df = enrich_players_dataframe(df, fallback_season, through_week)
 
     df.attrs["my_team_id"] = my_team_id
     return df

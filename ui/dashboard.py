@@ -969,14 +969,25 @@ def render_oline_rankings() -> None:
     )
 
     @st.cache_data(ttl=3600, show_spinner="Crunching play-by-play, snap counts, and draft data...")
-    def _load(season: int) -> pd.DataFrame:
-        return build_oline_rankings_with_trend(season)
+    def _load(season: int, coaching_season: int) -> pd.DataFrame:
+        return build_oline_rankings_with_trend(season, coaching_season=coaching_season)
 
     try:
-        rankings = _load(int(season))
+        rankings = _load(int(season), int(season))
     except Exception as exc:
-        st.error(f"Couldn't build O-Line rankings for {season}: {exc}")
-        return
+        fallback_season = int(season) - 1
+        st.warning(
+            f"Couldn't build O-Line rankings for {int(season)} ({exc}) -- nflverse likely hasn't "
+            f"published real game stats for that season yet (a known, real gap for the current/an "
+            f"upcoming season). Using {fallback_season}'s real stats instead -- coaching-change "
+            f"flags still reflect {int(season)}'s real, current coaching staff.",
+            icon="⚠️",
+        )
+        try:
+            rankings = _load(fallback_season, int(season))
+        except Exception as exc2:
+            st.error(f"Couldn't build O-Line rankings for {fallback_season} either ({exc2}).", icon="🚫")
+            return
 
     display = rankings.copy()
     display["trend"] = display["rank_change"].apply(

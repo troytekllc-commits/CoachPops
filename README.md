@@ -425,6 +425,23 @@ Game Outlook, applied here as `season`/`stats_season` instead since this
 report's own `season` argument already meant "which roster transition,"
 not "which stats."
 
+A full audit of every other season-selecting tab against the current
+real season turned up two more of the same bug: **O-Line Power
+Rankings** had NO fallback at all -- selecting 2026 crashed the whole
+tab with a raw error instead of showing anything -- and its
+coaching-change flags would have gone stale-by-a-year too once a
+fallback was added, for the same reason Team Change Impact's did.
+`build_oline_rankings_with_trend()` gained the same `coaching_season`
+split (defaulting to `season`) and `render_oline_rankings()` gained the
+same retry-and-warn fallback. Separately, `api/player_mapper.py`'s
+`build_players_dataframe()`/`build_league_rosters_dataframe()` (the live
+Yahoo data path's nfl_data_py backfill) could lose the entire real live
+Yahoo fetch over a bad enrichment-season pick -- the outer catch-all in
+`ui/dashboard.py` degraded gracefully to the Yahoo-free pool rather than
+crashing, but that's a bigger loss than it needed to be for what's really
+just a stats-availability issue one year deep; both now retry
+`enrich_players_dataframe()` one season back internally first.
+
 #### A real baseline for actual incoming rookies
 
 `apply_rookie_bump()` boosts a rookie's *existing* baseline projection —

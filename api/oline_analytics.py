@@ -217,11 +217,23 @@ def build_oline_power_rankings(season: int) -> pd.DataFrame:
     return df
 
 
-def build_oline_rankings_with_trend(season: int) -> pd.DataFrame:
+def build_oline_rankings_with_trend(season: int, coaching_season: Optional[int] = None) -> pd.DataFrame:
     """`build_oline_power_rankings(season)` plus year-over-year context:
     prior-season rank/score, the delta, how many of the current top-5
     O-line snap leaders are new vs. last season, and coaching-change
-    flags (reused from api/nfl_enrichment.py)."""
+    flags (reused from api/nfl_enrichment.py).
+
+    `coaching_season` is deliberately separate from `season` (same idea as
+    `api/team_change_analytics.py`'s `season`/`stats_season` split): real
+    coaching-staff data for the current/an upcoming season is published
+    well before any game is played (confirmed live), unlike the O-line
+    stats `season` itself needs, which can't exist before games are
+    actually played. Defaults to `season` (unchanged behavior for plain
+    historical lookups) -- pass the real requested season explicitly when
+    the caller had to fall back `season` to the last one with real stats
+    (see `render_oline_rankings()` in `ui/dashboard.py`), so the coaching
+    flags don't get stale-by-a-year for no reason."""
+    coaching_season = coaching_season if coaching_season is not None else season
     current = build_oline_power_rankings(season)
 
     try:
@@ -230,7 +242,7 @@ def build_oline_rankings_with_trend(season: int) -> pd.DataFrame:
         previous = pd.DataFrame(columns=["team", "oline_rank", "oline_score", "top5_player_ids"])
 
     prev_by_team = previous.set_index("team") if not previous.empty else previous
-    coaching = build_coaching_change_lookup(season)
+    coaching = build_coaching_change_lookup(coaching_season)
 
     def compute_changes(row: pd.Series) -> pd.Series:
         team = row["team"]
