@@ -1351,14 +1351,33 @@ def _normalize_last_name_for_match(last_name: str) -> str:
 
 
 def build_yahoo_adp_lookup(csv_path: Optional[Path] = None) -> Optional[Dict[str, dict]]:
-    """Two lookup dicts built from ``data/yahoo_draft_reference.csv``,
-    returned as ``{"exact": ..., "by_name_position": ...}`` -- or ``None``
-    (never raises) if that file doesn't exist. This is an optional,
-    refresh-when-you-feel-like-it signal (re-export a fresh cheat sheet PDF
-    and re-transcribe when your league's ADP has moved), not a live feed.
+    """Lookup dicts built from ``data/yahoo_draft_reference.csv``,
+    returned as ``{"exact": ..., "exact_by_full_name": ...,
+    "by_name_position": ...}`` -- or ``None`` (never raises) if that file
+    doesn't exist. This is an optional, refresh-when-you-feel-like-it
+    signal (re-export a fresh cheat sheet PDF and re-transcribe when your
+    league's ADP has moved), not a live feed.
 
     ``"exact"`` keys on ``(position, first_initial, normalized_last_name,
-    team)`` -- the strict, no-ambiguity match.
+    team)`` -- the strict, no-ambiguity match, EXCEPT a genuine collision
+    (two different real players sharing that exact key) is deliberately
+    dropped from this dict rather than silently kept as whichever row
+    iterated last -- confirmed live: Bijan Robinson (RB, ADP 2.1) and
+    Brian Robinson (RB, ADP 134.6) both real-life ended up on ATL as of
+    Brian's real 2026 move there, so ``(RB, "B", "robinson", "ATL")``
+    genuinely collides between two different people. A single-letter
+    initial can't resolve that -- a real first-round pick would have
+    silently gotten a WRONG, much-later ADP (or vice versa), which is
+    worse than showing no match at all. `attach_yahoo_adp()` still
+    resolves this specific real case correctly via ``"exact_by_full_name"``.
+
+    ``"exact_by_full_name"`` keys on ``(position, full_first_name_lower,
+    normalized_last_name, team)`` -- built ONLY from rows that have the
+    optional ``first_name`` CSV column filled in (most rows don't; this
+    reference was originally transcribed with just an initial, which is
+    all a rendered PDF cheat sheet unambiguously gives you at a glance).
+    Tried FIRST by `attach_yahoo_adp()`, since a full first name can
+    never collide the way a bare initial can.
 
     ``"by_name_position"`` keys on ``(position, first_initial,
     normalized_last_name)`` alone, mapped to a *list* of that name's
@@ -1370,7 +1389,7 @@ def build_yahoo_adp_lookup(csv_path: Optional[Path] = None) -> Optional[Dict[str
     sides' team codes can legitimately disagree for the same real player.
     When a name+position has exactly one candidate here, that's a safe
     match despite the team mismatch; `attach_yahoo_adp()` falls back to it
-    only when the strict team-matched lookup misses.
+    only when the strict team-matched lookups above both miss.
     """
     path = csv_path or DEFAULT_YAHOO_DRAFT_REFERENCE_CSV
     if not path.is_file():
@@ -1378,38 +1397,56 @@ def build_yahoo_adp_lookup(csv_path: Optional[Path] = None) -> Optional[Dict[str
 
     df = pd.read_csv(path)
     exact: Dict[tuple, dict] = {}
+    exact_key_counts: Dict[tuple, int] = {}
+    exact_by_full_name: Dict[tuple, dict] = {}
     by_name_position: Dict[tuple, list] = {}
     for _, row in df.iterrows():
         position = str(row["position"]).upper()
         first_initial = str(row["first_initial"]).upper()
         last_key = _normalize_last_name_for_match(str(row["last_name"]))
         team_key = _normalize_team_abbr(row["team"])
+        first_name = row.get("first_name")
         payload = {
             "yahoo_adp": float(row["adp"]) if pd.notna(row.get("adp")) else None,
             "yahoo_tier": int(row["tier"]) if pd.notna(row.get("tier")) else None,
             "yahoo_position_rank": int(row["overall_rank"]) if pd.notna(row.get("overall_rank")) else None,
         }
-        exact[(position, first_initial, last_key, team_key)] = payload
+
+        exact_key = (position, first_initial, last_key, team_key)
+        exact_key_counts[exact_key] = exact_key_counts.get(exact_key, 0) + 1
+        exact[exact_key] = payload
         by_name_position.setdefault((position, first_initial, last_key), []).append(payload)
 
-    return {"exact": exact, "by_name_position": by_name_position}
+        if pd.notna(first_name) and str(first_name).strip():
+            first_name_key = str(first_name).strip().lower()
+            exact_by_full_name[(position, first_name_key, last_key, team_key)] = payload
+
+    for key, count in exact_key_counts.items():
+        if count > 1:
+            exact.pop(key, None)
+
+    return {"exact": exact, "exact_by_full_name": exact_by_full_name, "by_name_position": by_name_position}
 
 
 def attach_yahoo_adp(players_df: pd.DataFrame, csv_path: Optional[Path] = None) -> pd.DataFrame:
     """Joins ``data/yahoo_draft_reference.csv``'s real Yahoo ADP/tier data
-    onto ``players_df`` by (position, first initial, normalized last name,
-    team) -- falling back to (position, first initial, last name) alone
-    when that name+position is unambiguous (see `build_yahoo_adp_lookup`'s
-    docstring on why team alone can't always be trusted). NAME-matched,
-    not an ID crosswalk (see module-level comment above for why). A real,
-    known limitation: this can silently miss a real match on a name
-    variant it doesn't normalize away, or (rarely) collide two different
-    players sharing an initial + last name + position. Treat the added
-    columns as directionally useful, not a guaranteed-correct join -- and
-    expect real, unavoidable misses for rookies who weren't on any roster
-    in whatever season the rest of the pool's stats come from (this
-    reference is for the *upcoming* draft; a completed-season stat pool
-    inherently can't contain next year's incoming rookie class).
+    onto ``players_df``, trying the full-first-name match first, then
+    (position, first initial, normalized last name, team), then falling
+    back to (position, first initial, last name) alone when that
+    name+position is unambiguous -- see `build_yahoo_adp_lookup`'s
+    docstring for exactly what each of those three lookups covers and why
+    (including a real, confirmed collision this specifically guards
+    against: Bijan Robinson vs. Brian Robinson, both real RBs on ATL).
+    NAME-matched, not an ID crosswalk (see module-level comment above for
+    why). A real, known limitation: this can still silently miss a real
+    match on a name variant it doesn't normalize away, and a genuine
+    collision with NEITHER row having a recorded full first name falls
+    back to showing no match for either rather than guessing. Treat the
+    added columns as directionally useful, not a guaranteed-correct join
+    -- and expect real, unavoidable misses for rookies who weren't on any
+    roster in whatever season the rest of the pool's stats come from
+    (this reference is for the *upcoming* draft; a completed-season stat
+    pool inherently can't contain next year's incoming rookie class).
 
     Adds ``yahoo_adp`` (float, lower = drafted earlier), ``yahoo_tier``
     (int), and ``yahoo_position_rank`` (int, rank within position) --
@@ -1424,6 +1461,7 @@ def attach_yahoo_adp(players_df: pd.DataFrame, csv_path: Optional[Path] = None) 
         return df
 
     exact = lookup["exact"]
+    exact_by_full_name = lookup["exact_by_full_name"]
     by_name_position = lookup["by_name_position"]
 
     def _match(row: pd.Series) -> dict:
@@ -1434,8 +1472,13 @@ def attach_yahoo_adp(players_df: pd.DataFrame, csv_path: Optional[Path] = None) 
             return {}
         position = str(row.get("display_position") or "").upper()
         first_initial = first[0].upper()
+        first_name_key = str(first).strip().lower()
         last_key = _normalize_last_name_for_match(last)
         team_key = row.get("editorial_team_abbr")
+
+        hit = exact_by_full_name.get((position, first_name_key, last_key, team_key))
+        if hit is not None:
+            return hit
 
         hit = exact.get((position, first_initial, last_key, team_key))
         if hit is not None:

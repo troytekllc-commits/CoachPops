@@ -609,16 +609,34 @@ alongside the comparisons above.
 This file has no API behind it — it's a one-time, manually transcribed
 snapshot of a real Yahoo Fantasy Plus premium "Cheat Sheet" PDF export
 for this exact league (columns: `position,tier,overall_rank,
-first_initial,last_name,team,adp`). Unlike every other join in this
-project, there's no stable ID to cross-reference a rendered PDF against,
-so `attach_yahoo_adp()` (`api/nfl_enrichment.py`) name-matches instead —
-a deliberate, documented exception to this project's usual "never guess
-by name" rule, made only because there's no alternative. It matches on
-`(position, first initial, normalized last name, team)` first, falling
-back to `(position, first initial, last name)` alone when that's
-unambiguous — this fallback matters because the reference file's team
-reflects *today's* roster while the stats pool's team can be a season or
-more stale, and real trades happen in between.
+first_initial,last_name,team,adp`, plus an optional `first_name` — see
+below). Unlike every other join in this project, there's no stable ID to
+cross-reference a rendered PDF against, so `attach_yahoo_adp()`
+(`api/nfl_enrichment.py`) name-matches instead — a deliberate, documented
+exception to this project's usual "never guess by name" rule, made only
+because there's no alternative. It tries the full first name first (see
+below), then falls back to `(position, first initial, normalized last
+name, team)`, then to `(position, first initial, last name)` alone when
+that's unambiguous — this last fallback matters because the reference
+file's team reflects *today's* roster while the stats pool's team can be
+a season or more stale, and real trades happen in between.
+
+**A real collision this surfaced**: a single-letter first initial isn't
+always enough to tell two real players apart. Confirmed live: Bijan
+Robinson (RB, real ADP 2.1) and Brian Robinson (RB, real ADP 134.6) both
+ended up on ATL once Brian's real 2026 move there landed — `(RB, "B",
+"robinson", "ATL")` then genuinely matched both of them, and a naive
+last-row-wins join silently gave Bijan Robinson's real first-round ADP
+to the wrong player. `build_yahoo_adp_lookup()` now detects this exact
+kind of collision and refuses to guess — it drops the ambiguous
+initial-only entry entirely rather than keeping whichever row happened
+to load last. The optional `first_name` column (filled in for just this
+one confirmed collision, not guessed at for the rest of the file) lets
+`attach_yahoo_adp()` resolve it correctly instead of just going blank:
+it's tried before the initial-based lookup, and a full first name can
+never collide the way a bare initial can. Add a `first_name` value for
+any other real collision you spot the same way — leave every unaffected
+row's `first_name` blank, exactly as before.
 
 **To refresh**: export a fresh Cheat Sheet PDF from your Yahoo Fantasy
 Plus account, re-transcribe it into the same CSV format, and replace
