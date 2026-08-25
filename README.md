@@ -84,20 +84,23 @@ wrapper), and [nfl_data_py](https://github.com/nflverse/nfl_data_py).
   matching) so `build_priority_board()` can join a mover's context notes
   onto the right Yahoo player.
 - `ui/` — Streamlit dashboard
-  - `dashboard.py` — 13-tab dashboard. **Priority Board** (see below) is
+  - `dashboard.py` — 14-tab dashboard. **Priority Board** (see below) is
     first; then League Optimizer, Rookie Radar, QB Konami Code, IR Stash
     Targets, WR3 Floor Finder, Breakout Radar, **TE Difference-Makers**,
-    **O-Line Power Rankings**, **Team Change Impact**, **Free Agent
-    Suggestions**, **Trade Finder** (see "Free Agent Suggestions & Trade
-    Finder" below), and **Draft Board** (see below). A sidebar toggle
-    switches between mock data and live Yahoo data; O-Line Power
-    Rankings/Team Change Impact/**Draft Board** (plus Priority Board's
-    O-Line/Team Change context) work with zero Yahoo access — pure
-    `nfl_data_py`. Every tab's table is styled via `_style_table()` to
-    match the blue theme (`.streamlit/config.toml`): light zebra-striped
-    row banding plus a blue-intensity gradient (darker = better) on that
-    tab's key ranking column, hand-interpolated between the theme's two
-    blues rather than pulling in matplotlib.
+    **O-Line Power Rankings**, **Team Change Impact**, **Run Game Outlook**
+    (see below), **Free Agent Suggestions**, **Trade Finder** (see "Free
+    Agent Suggestions & Trade Finder" below), and **Draft Board** (see
+    below). A sidebar toggle switches between mock data and live Yahoo
+    data; O-Line Power Rankings/Team Change Impact/**Run Game
+    Outlook**/**Draft Board** (plus Priority Board's O-Line/Team Change
+    context) work with zero Yahoo access — pure `nfl_data_py`. Every tab's
+    table is styled via `_style_table()` to match the blue theme
+    (`.streamlit/config.toml`): light zebra-striped row banding plus a
+    blue-intensity gradient (darker = better) on that tab's key ranking
+    column, hand-interpolated between the theme's two blues rather than
+    pulling in matplotlib.
+  - `api/run_game_analytics.py` — **Run Game Outlook**'s calculators (see
+    below).
 
 ### Priority Board
 
@@ -134,6 +137,46 @@ Change context are optional and fetched independently in the dashboard
 layer — a failure in either (e.g. a season nflverse hasn't published
 weekly data for yet) degrades that one context source rather than
 breaking the whole board.
+
+### Run Game Outlook
+
+Two real, separate questions (`api/run_game_analytics.py`), built with
+zero Yahoo access — pure `nfl_data_py`, same as O-Line Power
+Rankings/Team Change Impact:
+
+**Which teams project as the strongest running teams?**
+`build_run_game_outlook()` starts from last season's real rush rate
+(rushes as a share of rush+dropback plays) and efficiency (yards per
+carry, rushing EPA/play), then adjusts using the same forward-looking
+philosophy as O-Line Power Rankings: real O-line strength (reused
+directly from that tab), real coaching stability (new head
+coach/offensive coordinator flags reused from `api/nfl_enrichment.py`),
+and whether last season's lead back is still on the roster — a retained
+"bell cow" is a continuity signal; a departed one is flagged along with
+any notable RB arrival that might replace them (reusing
+`api/team_change_analytics.py`'s team-change detection). All of that
+blends into one 0-100 `run_outlook_score`, same real-percentiles-blend
+approach as `oline_score`/`priority_score` — directional, not a
+synthetic simulation of a season with zero snaps played yet.
+
+**Which RBs are the most heavily used, and who's a true bell cow?**
+`build_rb_workload_report()` computes each RB's real season
+carries/targets/receptions/receiving yards/touches, plus their *share*
+of their own team's RB-room usage on three independent axes — carry
+share, touch share, and offensive snap share. That share is what
+actually separates a bell cow from a committee back getting decent raw
+volume on a pass-heavy offense; `bell_cow_score` averages the three, and
+`usage_tier` buckets it into Bell Cow (≥70%) / Lead Back (≥50%) /
+Committee Lead (≥30%) / Depth-Committee.
+
+Validated against real 2024 outcomes: the workload report's top
+"Bell Cow" tier correctly surfaced Kyren Williams, Jonathan Taylor,
+Saquon Barkley, and Derrick Henry; the team outlook correctly flagged
+real offseason lead-back departures/arrivals (e.g. Tennessee's Derrick
+Henry departing to Baltimore, Philadelphia's D'Andre Swift departing as
+Saquon Barkley arrived). Like Draft Board, the season selector falls
+back one year automatically (with a visible warning) if nflverse hasn't
+published full weekly stats for the selected season yet.
 
 ### Free Agent Suggestions & Trade Finder
 

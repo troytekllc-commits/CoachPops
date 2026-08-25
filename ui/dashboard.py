@@ -1099,6 +1099,105 @@ def render_team_change_report() -> None:
     )
 
 
+def render_run_game_outlook() -> None:
+    """Team-level run-game outlook (which offenses look built to run the
+    ball, and why) plus RB workload/"bell cow" identification. Like
+    O-Line Power Rankings/Team Change Impact, this is pure nfl_data_py --
+    no Yahoo data needed."""
+    from api.nfl_enrichment import default_stats_season
+    from api.run_game_analytics import build_rb_workload_report, build_run_game_outlook
+
+    st.subheader("Run Game Outlook")
+    st.caption(
+        "**Team outlook**: last season's real rush rate/efficiency, adjusted by O-line strength "
+        "(reusing O-Line Power Rankings), coaching stability, and whether last season's lead back "
+        "is still on the roster -- into one 0-100 `run_outlook_score`, same real-signals-blend "
+        "approach as O-Line Power Rankings/Priority Board. Not a synthetic season simulation -- "
+        "see `api/run_game_analytics.py` for the full methodology. **RB workload**: every RB's "
+        "real carries/targets/receptions/touches, plus their *share* of their own team's RB-room "
+        "usage (carry/touch/snap share) -- that share is what actually separates a bell cow from a "
+        "committee back getting decent raw volume on a pass-heavy offense."
+    )
+
+    season = st.number_input(
+        "Season", min_value=2016, max_value=2035, value=default_stats_season(), step=1, key="run_game_season"
+    )
+
+    @st.cache_data(ttl=3600, show_spinner="Crunching play-by-play, snap counts, and roster data...")
+    def _load(season: int) -> tuple:
+        return build_run_game_outlook(season), build_rb_workload_report(season)
+
+    try:
+        outlook, workload = _load(int(season))
+    except Exception as exc:
+        fallback_season = int(season) - 1
+        st.warning(
+            f"Couldn't build the run game outlook for {int(season)} ({exc}) -- nflverse likely "
+            f"hasn't published full weekly stats for that season yet. Falling back to {fallback_season}.",
+            icon="⚠️",
+        )
+        try:
+            outlook, workload = _load(fallback_season)
+        except Exception as exc2:
+            st.error(f"Couldn't build the run game outlook for {fallback_season} either ({exc2}).", icon="🚫")
+            return
+
+    st.markdown("#### Team Run Game Outlook")
+    outlook_display = outlook.copy()
+    outlook_display["lead_back"] = outlook_display.apply(
+        lambda r: (
+            f"{r['lead_back_name']} (retained)" if r.get("workhorse_status") == "retained"
+            else f"{r['lead_back_name']} (departed)" if r.get("workhorse_status") == "departed"
+            else "no clear lead back"
+        ),
+        axis=1,
+    )
+    outlook_table = outlook_display[[
+        "team", "run_outlook_score", "rush_rate", "yards_per_carry", "rushing_epa_per_play",
+        "oline_score", "lead_back", "notable_arrivals", "context_notes",
+    ]].rename(columns={
+        "run_outlook_score": "outlook score", "rush_rate": "rush rate", "yards_per_carry": "YPC",
+        "rushing_epa_per_play": "rush EPA/play", "oline_score": "O-line score",
+        "lead_back": "lead back (last season)", "notable_arrivals": "notable RB arrivals",
+        "context_notes": "context",
+    })
+    st.dataframe(
+        _style_table(outlook_table, highlight_col="outlook score"),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("#### RB Workload / Bell Cow Finder")
+    tier_filter = st.multiselect(
+        "Usage tier", options=["Bell Cow", "Lead Back", "Committee Lead", "Depth/Committee"],
+        default=["Bell Cow", "Lead Back", "Committee Lead"], key="run_game_tier_filter",
+    )
+    filtered_workload = workload[workload["usage_tier"].isin(tier_filter)]
+    if filtered_workload.empty:
+        st.info("No RBs match the selected usage tier filter.")
+        return
+
+    workload_table = filtered_workload[[
+        "player_name", "team", "carries", "targets", "receptions", "receiving_yards",
+        "touches", "carry_share", "touch_share", "snap_share", "bell_cow_score", "usage_tier",
+    ]].rename(columns={
+        "player_name": "player", "receiving_yards": "rec yards", "carry_share": "carry share",
+        "touch_share": "touch share", "snap_share": "snap share", "bell_cow_score": "bell cow score",
+        "usage_tier": "usage tier",
+    })
+    st.dataframe(
+        _style_table(workload_table, highlight_col="bell cow score"),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(
+        "\"Share\" columns are that RB's percentage of their OWN team's RB-room carries/touches/"
+        "snaps -- not a league-wide ranking. A RB with modest raw touches but a high share is still "
+        "a real bell cow on a run-light offense; see the Team Run Game Outlook table above for that "
+        "team's overall volume."
+    )
+
+
 def render_priority_board(players_df: pd.DataFrame) -> None:
     """The rollup tab: blends every other tab's signal into one
     cross-position rank, for the question a waiver claim actually forces
@@ -1512,7 +1611,7 @@ def main() -> None:
         )
         players_df = build_mock_players_df()
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14 = st.tabs(
         [
             "Priority Board",
             "League Optimizer",
@@ -1524,6 +1623,7 @@ def main() -> None:
             "TE Difference-Makers",
             "O-Line Power Rankings",
             "Team Change Impact",
+            "Run Game Outlook",
             "Free Agent Suggestions",
             "Trade Finder",
             "Draft Board",
@@ -1550,10 +1650,12 @@ def main() -> None:
     with tab10:
         render_team_change_report()
     with tab11:
-        render_free_agent_suggestions(players_df, use_live=(data_source == "Live Yahoo data"), credentials=credentials)
+        render_run_game_outlook()
     with tab12:
-        render_trade_finder(use_live=(data_source == "Live Yahoo data"), credentials=credentials)
+        render_free_agent_suggestions(players_df, use_live=(data_source == "Live Yahoo data"), credentials=credentials)
     with tab13:
+        render_trade_finder(use_live=(data_source == "Live Yahoo data"), credentials=credentials)
+    with tab14:
         render_draft_board()
 
 
