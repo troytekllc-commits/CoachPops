@@ -67,6 +67,7 @@ from api.nfl_enrichment import (
     _normalize_team_abbr,
     build_coaching_change_lookup,
     build_season_injury_durability_lookup,
+    default_nfl_season,
     load_pbp,
     load_seasonal_rosters,
     load_snap_counts,
@@ -275,19 +276,39 @@ def _run_outlook_notes(row: pd.Series) -> str:
     return "; ".join(notes) if notes else "Insufficient data to assess"
 
 
-def build_run_game_outlook(season: int) -> pd.DataFrame:
+def build_run_game_outlook(season: int, roster_season: Optional[int] = None) -> pd.DataFrame:
     """One row per team, ranked by `run_outlook_score` (0-100, higher =
     more built to run the ball THIS season) -- see module docstring for
     exactly what this is (real last-season volume/efficiency + real,
     explainable adjustments) and isn't (a synthetic season simulation).
+
+    `season` and `roster_season` are deliberately separate, same reasoning
+    as `build_draft_board_pool()`: `season` is the last one with real
+    played games (rush rate/efficiency, O-line grading -- these can't come
+    from an unplayed season), while `roster_season` is the REAL current
+    roster/coaching situation (defaults to `default_nfl_season()`). Used
+    for: which team a returning lead back is actually on now, which teams
+    made a notable RB acquisition this real offseason (`find_team_changes()`
+    compares `roster_season` to `roster_season - 1`, not two stale years
+    back), and the current coaching-stability read -- all facts available
+    today, independent of whether nflverse has published `season`'s full
+    stats yet.
     """
+    roster_season = roster_season if roster_season is not None else default_nfl_season()
     run_rate = compute_team_run_rate(season)
-    oline = build_oline_rankings_with_trend(season)[[
-        "team", "oline_score", "rank_change", "new_starters_count",
-        "new_head_coach", "new_offensive_coordinator",
-    ]]
+    oline = build_oline_rankings_with_trend(season)[["team", "oline_score", "rank_change", "new_starters_count"]]
+    # Coaching stability is a CURRENT fact, not a fact about `season` -- see
+    # docstring above. Computed fresh for roster_season rather than trusting
+    # build_oline_rankings_with_trend()'s own new_head_coach/
+    # new_offensive_coordinator columns, which are (correctly, for THAT
+    # tab's own purpose) tied to `season` instead.
+    coaching_now = build_coaching_change_lookup(roster_season)
 
     df = run_rate.merge(oline, on="team", how="outer")
+    df["new_head_coach"] = df["team"].map(lambda t: coaching_now.get(t, {}).get("new_head_coach", False))
+    df["new_offensive_coordinator"] = df["team"].map(
+        lambda t: coaching_now.get(t, {}).get("new_offensive_coordinator", False)
+    )
     df["rush_rate_pct"] = _percentile_rank(df["rush_rate"], higher_is_better=True)
     df["run_efficiency_pct"] = (
         _percentile_rank(df["yards_per_carry"], higher_is_better=True)
@@ -299,12 +320,16 @@ def build_run_game_outlook(season: int) -> pd.DataFrame:
         axis=1,
     )
 
-    # Bell-cow continuity: is last season's lead back still around?
-    last_season_workload = build_rb_workload_report(season - 1, min_touches=MIN_TOUCHES_FOR_REPORT)
+    # Bell-cow continuity: is the most recent REAL season's lead back
+    # (season -- not season-1; season already IS "the last one with real
+    # stats" once a fallback has kicked in, so going back one more year
+    # here would be looking at stale-squared data) still on that team per
+    # the REAL CURRENT roster (roster_season)?
+    last_season_workload = build_rb_workload_report(season, min_touches=MIN_TOUCHES_FOR_REPORT)
     lead_backs = _team_lead_back(last_season_workload).set_index("team")
-    current_rosters = load_seasonal_rosters(season)
+    current_rosters = load_seasonal_rosters(roster_season)
     current_teams_by_player = current_rosters.set_index("player_id")["team"].apply(_normalize_team_abbr)
-    movers = find_team_changes(season)
+    movers = find_team_changes(roster_season)
     movers_by_team = movers[movers["position"] == RB_POSITION].groupby("team_new")["player_name"].apply(list)
 
     def _workhorse_signal(team: str) -> pd.Series:

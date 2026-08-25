@@ -676,14 +676,19 @@ def build_enrichment_lookup(
     coordinator_csv_path: Optional[Path] = None,
     game_script_week: Optional[int] = None,
     key_by: str = "yahoo_id",
+    roster_season: Optional[int] = None,
 ) -> Dict[str, dict]:
     """Build a ``{yahoo_id: {...enrichment fields...}}`` lookup for one season
     (or ``{gsis_id: {...}}`` if ``key_by="player_id"`` -- see that arg below).
 
     Args:
-        season: NFL season year (e.g. 2024). During a season, this is
-            simply the current year -- but in January/February you're
-            still in the *previous* year's season, so pass that explicitly.
+        season: The STATS season -- NFL season year (e.g. 2024) whose real
+            played games back everything here that can only come from
+            actual games (target_share, red_zone_share, snap share, game
+            script, weather, injury reports/opportunity/durability). During
+            a season, this is simply the current year -- but in January/
+            February you're still in the *previous* year's season, so pass
+            that explicitly.
         through_week: If given, only weeks up to and including this one are
             used to compute ``target_share``/points-per-game averages
             (useful for excluding future/unplayed weeks). Defaults to all
@@ -697,9 +702,25 @@ def build_enrichment_lookup(
             rostered player with zero Yahoo dependency -- see
             ``build_draft_board_pool()``, built for pre-draft research
             while Yahoo API access is still pending).
-    """
-    rosters = load_seasonal_rosters(season)
-    draft_picks = load_draft_picks(season)
+        roster_season: The CONTEXT season -- which team a player is on,
+            whether they're a rookie THIS year, their real draft capital,
+            and the current coaching situation. Defaults to `season` (the
+            live, in-season case, where the two are naturally the same
+            year) -- but a Yahoo-free tool built from a stale stats season
+            (e.g. Draft Board falling back to 2024 stats because nflverse
+            hasn't published 2025's yet) should pass the REAL current
+            season here instead (`default_nfl_season()`), so a player's
+            team/rookie status/draft slot and the league's coaching
+            situation reflect today's real roster -- available immediately,
+            unlike box scores -- rather than a year-plus-stale one. Real,
+            concrete bug this fixes: without it, a genuine 2026 rookie
+            checked against 2024's rookie class would never be flagged
+            `is_rookie` at all, and "new offensive coordinator" would be
+            answering "new for 2024" instead of "new for 2026."
+        """
+    roster_season = roster_season if roster_season is not None else season
+    rosters = load_seasonal_rosters(roster_season)
+    draft_picks = load_draft_picks(roster_season)
     weekly = load_weekly_data(season)
     if through_week is not None:
         weekly = weekly[weekly["week"] <= through_week]
@@ -707,7 +728,7 @@ def build_enrichment_lookup(
     red_zone_share_by_gsis = load_red_zone_share_by_gsis(season)
     injury_opportunity_by_gsis = build_injury_opportunity_lookup(season, injury_week)
     injury_durability_by_gsis = build_season_injury_durability_lookup(season)
-    coaching_change_by_team = build_coaching_change_lookup(season, coordinator_csv_path)
+    coaching_change_by_team = build_coaching_change_lookup(roster_season, coordinator_csv_path)
     qb_year2_flags_by_gsis = build_qb_year2_regression_flags(season)
     te_snap_share_by_gsis = build_te_snap_share_lookup(season)
     offense_context_by_team = compute_team_offense_context(season).set_index("team")
@@ -724,10 +745,30 @@ def build_enrichment_lookup(
 
     weather_by_team = build_game_weather_lookup(season, game_script_week)
 
-    draft_by_gsis = {
-        row["gsis_id"]: {"round": int(row["round"]), "pick": int(row["pick"])}
-        for _, row in draft_picks.dropna(subset=["gsis_id"]).iterrows()
-    }
+    # A real, discovered ID gap for the FRESHEST draft class: nflverse's
+    # import_draft_picks()'s own `gsis_id` column lags behind
+    # import_seasonal_rosters()'s `player_id` for players drafted this
+    # year -- confirmed directly (every one of the 2026 class's 257 picks
+    # carries a temp PFR-style ID like "LOV121782" in `gsis_id`, not the
+    # standard "00-00XXXXX" gsis format rosters uses, while the prior
+    # year's class is already fully reconciled: 256/257). Left as-is, this
+    # would mean the newest, most roster_season-relevant rookies -- the
+    # exact ones this project's `is_rookie`/`draft_capital` split from the
+    # stats season was built to correctly flag -- never actually got a
+    # `draft_capital` match. Both tables agree on a real, stable
+    # `pfr_player_id`/`pfr_id` (confirmed directly: "LoveJe00" for
+    # Jeremiyah Love in both), so bridge through that first and only fall
+    # back to the draft table's own `gsis_id` when there's no pfr_id match
+    # (older classes, or a player missing a pfr_id in one table).
+    pfr_id_to_gsis = (
+        rosters.dropna(subset=["pfr_id"]).drop_duplicates("pfr_id").set_index("pfr_id")["player_id"].to_dict()
+    )
+    draft_by_gsis: Dict[str, dict] = {}
+    for _, row in draft_picks.iterrows():
+        gsis_id_for_pick = pfr_id_to_gsis.get(row.get("pfr_player_id")) or row.get("gsis_id")
+        if not gsis_id_for_pick or pd.isna(gsis_id_for_pick):
+            continue
+        draft_by_gsis[gsis_id_for_pick] = {"round": int(row["round"]), "pick": int(row["pick"])}
     target_share_by_gsis = weekly.groupby("player_id")["target_share"].mean().to_dict()
     ppg_by_gsis = weekly.groupby("player_id")["fantasy_points"].mean().to_dict()
 
@@ -747,7 +788,7 @@ def build_enrichment_lookup(
         weather = weather_by_team.get(team, {})
 
         lookup[key] = {
-            "is_rookie": bool(row.get("rookie_year") == season),
+            "is_rookie": bool(row.get("rookie_year") == roster_season),
             "draft_capital": draft_by_gsis.get(gsis_id),
             "target_share": target_share_by_gsis.get(gsis_id),
             "deep_target_share": deep_share_by_gsis.get(gsis_id),
@@ -804,6 +845,7 @@ def enrich_players_dataframe(
     coordinator_csv_path: Optional[Path] = None,
     game_script_week: Optional[int] = None,
     key_by: str = "yahoo_id",
+    roster_season: Optional[int] = None,
 ) -> pd.DataFrame:
     """Fill in every field listed in ``ENRICHMENT_FIELDS`` on a players
     DataFrame (as produced by ``api/player_mapper.py``, or
@@ -817,11 +859,18 @@ def enrich_players_dataframe(
             to hold Yahoo's player_id (yfpy's convention); ``"player_id"``
             expects it to hold nflverse's own gsis ID instead (what
             ``build_draft_board_pool()`` populates it with).
+        roster_season: Passed straight through to
+            ``build_enrichment_lookup()`` -- see its docstring for why a
+            stale stats season (e.g. Draft Board falling back to 2024)
+            shouldn't also decide team/rookie/draft-capital/coaching
+            context, which real, current data already exists for.
 
     Players whose ``player_id`` has no match in that crosswalk are left
     with whatever defaults they already had (see module docstring).
     """
-    lookup = build_enrichment_lookup(season, through_week, injury_week, coordinator_csv_path, game_script_week, key_by)
+    lookup = build_enrichment_lookup(
+        season, through_week, injury_week, coordinator_csv_path, game_script_week, key_by, roster_season
+    )
     df = players_df.copy()
 
     for field in ENRICHMENT_FIELDS:
@@ -843,25 +892,48 @@ _DRAFT_BOARD_STAT_KEYS = (
 )
 
 
-def build_draft_board_pool(season: int, positions: tuple = DRAFT_BOARD_POSITIONS) -> pd.DataFrame:
-    """A full draft-day player pool -- every real skill-position player
-    rostered in `season`, with last season's actual production (ready
-    for `calculate_custom_value()` to score under THIS league's own
-    weights, not nfl_data_py's PPR-flavored default) plus every
-    enrichment signal this project already computes -- built with ZERO
-    Yahoo dependency, keyed entirely by nflverse's own gsis `player_id`
-    (see `enrich_players_dataframe(..., key_by="player_id")`).
+def build_draft_board_pool(
+    season: int, positions: tuple = DRAFT_BOARD_POSITIONS, roster_season: Optional[int] = None
+) -> pd.DataFrame:
+    """A full draft-day player pool -- every real skill-position player on
+    the CURRENT real roster (`roster_season`, defaulting to
+    `default_nfl_season()` -- e.g. 2026), with `season`'s actual production
+    (ready for `calculate_custom_value()` to score under THIS league's own
+    weights, not nfl_data_py's PPR-flavored default) plus every enrichment
+    signal this project already computes -- built with ZERO Yahoo
+    dependency, keyed entirely by nflverse's own gsis `player_id` (see
+    `enrich_players_dataframe(..., key_by="player_id")`).
+
+    `season` and `roster_season` are deliberately separate: `season` is
+    the last one with real played games to draw production from (real
+    stats can't come from a season that hasn't happened yet), while
+    `roster_season` is "who's actually on what team right now" -- a real,
+    current fact available immediately, unlike box scores. These are
+    routinely different years in practice: as of this writing,
+    nflverse hasn't published full 2025 weekly stats yet (see
+    `render_draft_board()`'s automatic one-year-back fallback in
+    ui/dashboard.py), so `season` ends up being 2024 while `roster_season`
+    is the real 2026 season being drafted for. Using the stale season for
+    BOTH would mean showing a player's old 2024 team (wrong after any
+    trade/free-agent move since) and -- more concretely -- silently
+    failing to flag any real 2026 rookie as `is_rookie` at all, since
+    they'd be checked against 2024's rookie class instead of 2026's. Team/
+    rookie-status/draft-capital/coaching-situation all come from
+    `roster_season` for exactly this reason (see
+    `build_enrichment_lookup()`'s docstring); target share, red-zone
+    share, and every other played-game signal still correctly come from
+    `season`, since there's no substitute for that.
 
     Built for pre-draft research while Yahoo API access is pending. This
-    is NOT a synthetic projection for the upcoming season -- no real
-    projections feed is connected (see README's "paid services" notes on
-    FantasyPros). It's last season's real, actual performance under your
-    league's scoring, adjusted by real signals about what's changed since
-    (new offensive coordinators, coaching changes, injury-opened
-    opportunity, rookie draft capital for players who had no NFL stats
-    yet). Treat it as a serious, defensible starting point for ranking
-    players -- not a finished cheat sheet that already knows about
-    every offseason move (e.g. it can't model a free-agent signing
+    is NOT a synthetic projection for the upcoming season on its own --
+    see `api/fantasypros.py` for a real external projection where it's
+    available. It's last completed season's real, actual performance
+    under your league's scoring, adjusted by real signals about what's
+    changed since (new offensive coordinators, coaching changes, injury-
+    opened opportunity, rookie draft capital for players who had no NFL
+    stats yet). Treat it as a serious, defensible starting point for
+    ranking players -- not a finished cheat sheet that already knows
+    about every offseason move (e.g. it can't model a free-agent signing
     changing a target competition -- see this module's docstring on that
     exact gap).
 
@@ -870,7 +942,8 @@ def build_draft_board_pool(season: int, positions: tuple = DRAFT_BOARD_POSITIONS
     `draft_capital` alone, which is exactly what `apply_rookie_bump()`
     is built to use.
     """
-    rosters = load_seasonal_rosters(season)
+    roster_season = roster_season if roster_season is not None else default_nfl_season()
+    rosters = load_seasonal_rosters(roster_season)
     rosters = rosters[rosters["position"].isin(positions)].drop_duplicates(subset=["player_id"])
 
     stat_totals = load_season_stat_totals(season).set_index("player_id")
@@ -919,7 +992,7 @@ def build_draft_board_pool(season: int, positions: tuple = DRAFT_BOARD_POSITIONS
     df = pd.DataFrame(rows)
     if df.empty:
         return df
-    return enrich_players_dataframe(df, season, key_by="player_id")
+    return enrich_players_dataframe(df, season, key_by="player_id", roster_season=roster_season)
 
 
 # --- Yahoo premium draft reference (manual, name-matched -- see caveat) -

@@ -362,6 +362,34 @@ Change Impact tabs, and the live-data sidebar's enrichment season, all use
 `default_stats_season()` — verified directly: `import_seasonal_rosters([2026])`
 returns real data in August 2026, but `import_pbp_data([2026])` 404s since
 no games have been played yet.
+
+**Draft Board and Run Game Outlook go a step further**, since they're
+built specifically to work while last season's stats are stale or
+unavailable: `build_draft_board_pool()`/`build_run_game_outlook()` both
+take a *separate* `roster_season` parameter (defaulting to
+`default_nfl_season()`) from their stats-season parameter. Team
+assignment, rookie status, real draft capital, and the current coaching
+situation always come from `roster_season` — a real, current fact
+available immediately — while production (target share, rush efficiency,
+O-line grading) still correctly comes from whichever stats season is
+actually available. Without this split, a real, concrete bug existed:
+when nflverse's 2025 gap forces a fallback to 2024 stats, EVERY
+enrichment signal silently followed along with it too — a genuine 2026
+rookie would never be flagged `is_rookie` at all (checked against 2024's
+rookie class instead of 2026's), a team's real 2026 draft capital
+wouldn't attach (checked against 2024's draft class), "new offensive
+coordinator" would answer "new for 2024" instead of "new for 2026" (this
+project's own real, verified 2026 coaching-carousel data, wasted), and
+Run Game Outlook's "is the lead back still here" check would compare
+against a two-year-stale roster snapshot instead of today's real one.
+This also surfaced a second real, upstream data gap while fixing the
+first: nflverse's `import_draft_picks()` hasn't yet backfilled a proper
+gsis ID for the FRESHEST draft class (2026's picks all carry a temp
+PFR-style ID in the `gsis_id` column instead of the standard
+`00-00XXXXX` format `import_seasonal_rosters()` uses) — confirmed
+directly, and worked around by bridging through the real `pfr_player_id`/
+`pfr_id` crosswalk both tables agree on instead of trusting
+`import_draft_picks()`'s own `gsis_id` column blindly.
 - `scripts/yahoo_login.py` — one-off CLI script that performs the initial
   Yahoo OAuth browser handshake (run this before switching the dashboard to
   live data).
