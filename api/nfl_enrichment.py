@@ -1289,10 +1289,15 @@ def attach_sleeper_status_and_trending(players_df: pd.DataFrame) -> pd.DataFrame
     and `sleeper_trending_adds` from Sleeper's free API onto
     `build_draft_board_pool()`'s Yahoo-free pool, keyed by `player_id`
     (gsis ID -- see `api/external_sources.py`'s gsis-keyed Sleeper
-    functions). This is what makes that pool usable as a genuine
-    Yahoo-independent substitute for a live Yahoo `players_df`: without
-    it, `status` is always `""` (IR Stash Targets would always be empty)
-    and `sleeper_trending_adds` is always missing (one of Breakout Radar's
+    functions), then a (full name, team) fallback for the real gap that
+    leaves (confirmed live: 192 real, active skill-position players --
+    including actual fantasy starters, not just deep bench -- carry a
+    real, current Sleeper `injury_status` with no `gsis_id` to join on
+    at all; see `build_sleeper_name_team_injury_fallback()`'s docstring).
+    This is what makes that pool usable as a genuine Yahoo-independent
+    substitute for a live Yahoo `players_df`: without it, `status` is
+    always `""` (IR Stash Targets would always be empty) and
+    `sleeper_trending_adds` is always missing (one of Breakout Radar's
     signals never fires).
 
     Never raises -- a Sleeper fetch failure (network hiccup, schema
@@ -1300,7 +1305,12 @@ def attach_sleeper_status_and_trending(players_df: pd.DataFrame) -> pd.DataFrame
     the pool already had (its own `""`/``None`` defaults), logged, not
     surfaced as an error to the caller.
     """
-    from api.external_sources import build_sleeper_gsis_trending_lookup, build_sleeper_injury_status_lookup
+    from api.external_sources import (
+        build_sleeper_gsis_trending_lookup,
+        build_sleeper_injury_status_lookup,
+        build_sleeper_name_team_injury_fallback,
+        _normalize_full_name_for_match,
+    )
 
     df = players_df.copy()
     if "status" not in df.columns:
@@ -1311,12 +1321,27 @@ def attach_sleeper_status_and_trending(players_df: pd.DataFrame) -> pd.DataFrame
     try:
         status_lookup = build_sleeper_injury_status_lookup()
         trending_lookup = build_sleeper_gsis_trending_lookup()
+        name_team_fallback = build_sleeper_name_team_injury_fallback()
     except Exception as exc:
         logger.warning("Sleeper fetch failed (%s) -- status/sleeper_trending_adds left as-is.", exc)
         return df
 
     player_ids = df["player_id"].astype(str)
     sleeper_status = player_ids.map(lambda pid: status_lookup.get(pid, {}).get("status"))
+
+    def _fallback_status(row: pd.Series) -> Optional[str]:
+        name = row.get("name")
+        full_name = name.get("full") if isinstance(name, dict) else None
+        team = _normalize_team_abbr(row.get("editorial_team_abbr"))
+        if not full_name or not team:
+            return None
+        key = (_normalize_full_name_for_match(full_name), team)
+        return name_team_fallback.get(key, {}).get("status")
+
+    missing = sleeper_status.isna() | (sleeper_status == "")
+    if missing.any():
+        sleeper_status = sleeper_status.where(~missing, df.loc[missing].apply(_fallback_status, axis=1))
+
     df["status"] = sleeper_status.where(sleeper_status.notna() & (sleeper_status != ""), df["status"])
     sleeper_trending = player_ids.map(trending_lookup)
     df["sleeper_trending_adds"] = sleeper_trending.where(sleeper_trending.notna(), df["sleeper_trending_adds"])

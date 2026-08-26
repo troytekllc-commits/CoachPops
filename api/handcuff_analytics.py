@@ -46,7 +46,11 @@ from typing import Optional
 
 import pandas as pd
 
-from api.external_sources import build_sleeper_injury_status_lookup
+from api.external_sources import (
+    _normalize_full_name_for_match,
+    build_sleeper_injury_status_lookup,
+    build_sleeper_name_team_injury_fallback,
+)
 from api.nfl_enrichment import _normalize_team_abbr, default_nfl_season, load_seasonal_rosters, load_weekly_data
 from api.run_game_analytics import compute_rb_workload
 
@@ -146,11 +150,24 @@ def find_next_man_up(season: int, roster_season: Optional[int] = None) -> pd.Dat
         return merged
 
     status_lookup = build_sleeper_injury_status_lookup()
-    merged["starter_status"] = merged["player_id_starter"].map(
-        lambda pid: status_lookup.get(str(pid), {}).get("status", "")
+    name_team_fallback = build_sleeper_name_team_injury_fallback()
+
+    def _status_for(player_id, player_name, team) -> str:
+        status = status_lookup.get(str(player_id), {}).get("status", "")
+        if status:
+            return status
+        # Real, confirmed gap this closes: Sleeper's own data doesn't
+        # have a gsis_id for every real player (192 real, active
+        # skill-position players right now, including real fantasy
+        # starters -- see build_sleeper_name_team_injury_fallback()'s
+        # docstring) -- fall back to matching by (full name, team).
+        return name_team_fallback.get((_normalize_full_name_for_match(player_name), team), {}).get("status", "")
+
+    merged["starter_status"] = merged.apply(
+        lambda r: _status_for(r["player_id_starter"], r["player_name_starter"], r["team"]), axis=1
     )
-    merged["backup_status"] = merged["player_id_backup"].map(
-        lambda pid: status_lookup.get(str(pid), {}).get("status", "")
+    merged["backup_status"] = merged.apply(
+        lambda r: _status_for(r["player_id_backup"], r["player_name_backup"], r["team"]), axis=1
     )
 
     at_risk = merged[merged["starter_status"].isin(STARTER_AT_RISK_STATUSES)].copy()

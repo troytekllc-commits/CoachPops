@@ -198,6 +198,36 @@ risk signals (QB sophomore slump, high wind). The one exception is the
 FA/Trade IR/PUP/NA/suspended exclusion above, which is a hard filter, not a
 caution -- that's a categorical "can't play," not a risk level.
 
+#### A real gap in Sleeper's own data, closed with a name+team fallback
+
+The Yahoo-free player pool's `status` comes from Sleeper (see
+`api/external_sources.py`), joined by `gsis_id`. A real, confirmed gap
+this surfaced: Sleeper's own player records don't have a `gsis_id` for
+every real player -- **192 real, active skill-position (QB/RB/WR/TE)
+players** as of this writing carry a real, current `injury_status` in
+Sleeper's data with `gsis_id` set to `None`, including actual fantasy
+starters (Ja'Marr Chase, Malik Nabers, Xavier Worthy, Puka Nacua, Breece
+Hall, Sam LaPorta, and Ricky Pearsall among them) -- not just deep-bench
+names. Without a fallback, the gsis-keyed join silently treated every one
+of them as healthy, which is how a real, current season-ending injury
+(Ricky Pearsall's real IR designation) went undetected across the whole
+app: IR Stash Targets couldn't have surfaced him, and Next Man Up kept
+recommending him as a "next man up" backup at his own position despite
+him structurally being unable to play.
+
+`build_sleeper_name_team_injury_fallback()` (`api/external_sources.py`)
+closes this: a `(normalized full name, team)`-keyed lookup, tried only
+when the gsis-keyed lookup comes up empty, built from every Sleeper
+record (not just the gsis-less ones) so a genuine collision -- two real
+players sharing the same normalized name and team -- gets detected and
+dropped rather than guessed at, same defensive pattern as
+`build_yahoo_adp_lookup()`'s Bijan/Brian Robinson fix above. Wired into
+both `attach_sleeper_status_and_trending()` (the shared path every
+players_df-based tab uses) and `find_next_man_up()` (which builds its
+own separate Sleeper lookup). Confirmed live: across the full 915-player
+pool, this took real detected `"Q"` statuses from 18 to 100 and real
+`"IR"` statuses from 2 to 35 -- the gap was substantial, not a one-off.
+
 ### "Real data (no Yahoo)" — a genuine substitute while Yahoo approval is pending
 
 The sidebar's third "Waiver wire data" option builds a REAL, full-coverage
